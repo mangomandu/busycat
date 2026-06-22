@@ -109,6 +109,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single instance: if another copy is already running, quit immediately so
+        // we never end up with a row of cats.
+        let me = NSRunningApplication.current
+        let dupes = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "com.dlfnek.runcatgpu")
+            .filter { $0.processIdentifier != me.processIdentifier }
+        if !dupes.isEmpty { NSApp.terminate(nil); return }
+
         setupSprite()
         buildMenu()
         registerSleepWake()
