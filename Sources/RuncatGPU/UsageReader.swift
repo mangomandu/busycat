@@ -209,6 +209,13 @@ enum GPUReader {
     // of copying the accelerator's entire (large) property set each tick.
     private static var cachedService: io_object_t = 0
 
+    /// Apple's "Device Utilization %" is device-wide: it rises ~20-30% just from
+    /// WindowServer compositing the screen (wallpaper, window movement, even our
+    /// own cat) — not "GPU work" in the sense we care about. Subtract that
+    /// baseline and rescale so casual screen activity reads ~0 while real compute
+    /// (embeddings) still reaches ~100. Tune `compositingFloor` to taste.
+    static let compositingFloor = 30.0
+
     static func usage() -> Double {
         if cachedService == 0 { cachedService = findAccelerator() }
         guard cachedService != 0 else { return 0 }
@@ -217,7 +224,8 @@ enum GPUReader {
             cachedService = 0
             return 0
         }
-        return min(100, deviceUsage(perf))
+        let raw = min(100, deviceUsage(perf))
+        return max(0, (raw - compositingFloor) / (100 - compositingFloor) * 100)
     }
 
     /// First IOAccelerator that exposes PerformanceStatistics (one AGX GPU on
