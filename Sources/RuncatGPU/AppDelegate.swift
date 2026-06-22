@@ -1,24 +1,25 @@
 /*
- AppDelegate.swift — full RuncatGPU on the light (CALayer) renderer.
+ AppDelegate.swift — full RuncatGPU on the light CALayer renderer.
 
- Combines:
-   • light-render: cat drawn in a sublayer, animated by swapping layer.contents
-     from a timer (no button.image → no menu-bar background recomposite; no
-     CAKeyframeAnimation clock → no stutter). ~0.5% CPU on macOS 26.
-   • full features: GPU + CPU + memory + disk + network + battery, selectable
-     speed driver, show-%/invert/flip/launch-at-login, sleep-wake. The costly
-     metrics are sampled only while the menu is open.
+ Rendering: cat in a CALayer; the runner timer swaps spriteLayer.contents (no
+ button.image → no macOS 26 menu-bar background recomposite → ~0.3% CPU).
 
- Speed curve is a gentle linear idleFPS→maxFPS (calmer than RunCat's fps==usage%);
- both ends are tunable constants below.
+ Colour: CALayer contents can't auto-invert like a template image, and no
+ light/dark API reliably reports a *dark menu bar under Light Mode* (dark
+ wallpaper). So we tint manually and expose a "고양이 색" override
+ (자동/흰색/검정): 자동 follows the system Dark/Light mode, and the manual
+ choices are a bulletproof escape when 자동 guesses wrong.
+
+ Speed = RunCat's exact curve; CPU% matches RunCat's formula (UsageReader).
+ Heavy metrics (disk/net/battery) are sampled only while the menu is open.
 */
 
 import Cocoa
+import QuartzCore
 import ServiceManagement
 
 enum SpeedDriver: String, CaseIterable {
     case busiest, cpu, gpu, memory
-
     var label: String {
         switch self {
         case .busiest: return "가장 바쁜 쪽 (CPU·GPU)"
@@ -27,7 +28,6 @@ enum SpeedDriver: String, CaseIterable {
         case .memory: return "메모리"
         }
     }
-
     func value(_ m: Metrics) -> Double {
         switch self {
         case .busiest: return max(m.cpu, m.gpu)
@@ -38,10 +38,19 @@ enum SpeedDriver: String, CaseIterable {
     }
 }
 
+enum CatColor: String, CaseIterable {
+    case auto, white, black
+    var label: String {
+        switch self {
+        case .auto: return "자동 (시스템 모드)"
+        case .white: return "흰색"
+        case .black: return "검정"
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let barHeight: CGFloat = 18
-    private let idleFPS = 5.0    // speed at ~0% load
-    private let maxFPS = 22.0    // speed at 100% load (tune to taste)
     private let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
 
     private lazy var statusItem: NSStatusItem = {
@@ -51,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let spriteLayer = CALayer()
     private let textLayer = CATextLayer()
     private var tintedFrames: [CGImage] = []
-    private var tintIsLight = true
+    private var lastTintWhite = false
 
     private var index = 0
     private var runnerTimer: Timer?
@@ -67,6 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var driver: SpeedDriver {
         get { SpeedDriver(rawValue: defaults.string(forKey: "driver") ?? "") ?? .busiest }
         set { defaults.set(newValue.rawValue, forKey: "driver") }
+    }
+    private var catColor: CatColor {
+        get { CatColor(rawValue: defaults.string(forKey: "catColor") ?? "") ?? .auto }
+        set { defaults.set(newValue.rawValue, forKey: "catColor") }
     }
     private var showText: Bool {
         get { defaults.bool(forKey: "showText") }
@@ -88,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let netItem = NSMenuItem(title: "네트워크", action: nil, keyEquivalent: "")
     private let batItem = NSMenuItem(title: "배터리", action: nil, keyEquivalent: "")
     private var driverItems: [NSMenuItem] = []
+    private var catColorItems: [NSMenuItem] = []
     private var showTextItem: NSMenuItem!
     private var invertItem: NSMenuItem!
     private var flipItem: NSMenuItem!
@@ -100,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerSleepWake()
         rebuildArtwork()
         layout()
-        _ = sampler.sampleAll()  // prime counters
+        _ = sampler.sampleAll()
         startAnimation(interval: currentInterval)
         sampleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.tick()
@@ -114,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sampleTimer?.invalidate()
     }
 
-    // MARK: Sprite (cat in a sublayer; contents swapped by the timer)
+    // MARK: Sprite
 
     private func setupSprite() {
         guard let button = statusItem.button else { return }
@@ -139,15 +153,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         container.layer?.addSublayer(spriteLayer)
     }
 
+    private func wantWhite() -> Bool {
+        switch catColor {
+        case .white: return true
+        case .black: return false
+        case .auto:
+            return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        }
+    }
+
     private func rebuildArtwork() {
-        tintIsLight = isLightMenuBar()
-        let color: NSColor = tintIsLight ? .black : .white
+        lastTintWhite = wantWhite()
+        let color: NSColor = lastTintWhite ? .white : .black
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         tintedFrames = CatFrames.load(height: barHeight, flipped: flip)
             .compactMap { tinted($0, color: color, scale: scale) }
-        textLayer.foregroundColor = color.cgColor
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        textLayer.foregroundColor = color.cgColor
         if index >= tintedFrames.count { index = 0 }
         spriteLayer.contents = tintedFrames.first
         CATransaction.commit()
@@ -171,11 +194,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rect.fill(using: .sourceAtop)
         NSGraphicsContext.restoreGraphicsState()
         return rep.cgImage
-    }
-
-    private func isLightMenuBar() -> Bool {
-        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
-        return appearance.bestMatch(from: [.aqua, .darkAqua]) != .darkAqua
     }
 
     private func layout() {
@@ -223,6 +241,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         driverParent.submenu = driverMenu
         menu.addItem(driverParent)
 
+        let colorParent = NSMenuItem(title: "고양이 색", action: nil, keyEquivalent: "")
+        let colorMenu = NSMenu()
+        for c in CatColor.allCases {
+            let it = NSMenuItem(title: c.label, action: #selector(selectCatColor(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = c.rawValue
+            it.state = (c == catColor) ? .on : .off
+            colorMenu.addItem(it)
+            catColorItems.append(it)
+        }
+        colorParent.submenu = colorMenu
+        menu.addItem(colorParent)
+
         showTextItem = toggle("메뉴바에 % 표시", #selector(toggleShowText), showText)
         invertItem = toggle("속도 반전 (바쁘면 느리게)", #selector(toggleInvert), invert)
         flipItem = toggle("좌우 반전", #selector(toggleFlip), flip)
@@ -256,6 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             latest.gpu = light.gpu
             latest.memory = light.memory
         }
+        if catColor == .auto, wantWhite() != lastTintWhite { rebuildArtwork() }
         if showText { layout() }
 
         guard !asleep else { return }
@@ -264,14 +296,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let target = interval(forUsage: usage)
         if abs(target - currentInterval) > 0.003 {
             currentInterval = target
-            startAnimation(interval: target)  // index preserved → seamless
+            startAnimation(interval: target)
         }
     }
 
-    /// Gentle linear map: idle→idleFPS, full load→maxFPS.
+    /// RunCat's exact mapping: 5 fps up to ~5% load (choppy idle like RunCat),
+    /// then linear up to 100 fps at full load.
     private func interval(forUsage usage: Double) -> TimeInterval {
-        let u = max(0, min(100, usage)) / 100
-        return 1.0 / (idleFPS + u * (maxFPS - idleFPS))
+        return 0.2 / max(1.0, min(20.0, usage / 5.0))
     }
 
     private func startAnimation(interval: TimeInterval) {
@@ -286,7 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func next() {
         guard !tintedFrames.isEmpty else { return }
         index = (index + 1) % tintedFrames.count
-        spriteLayer.contents = tintedFrames[index]  // cheap: no cell/background redraw
+        spriteLayer.contents = tintedFrames[index]
     }
 
     private func refreshMenuTitles() {
@@ -316,6 +348,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         driver = d
         for it in driverItems { it.state = (it === sender) ? .on : .off }
         tick()
+    }
+
+    @objc private func selectCatColor(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let c = CatColor(rawValue: raw)
+        else { return }
+        catColor = c
+        for it in catColorItems { it.state = (it === sender) ? .on : .off }
+        rebuildArtwork()
     }
 
     @objc private func toggleShowText() {

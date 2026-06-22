@@ -71,15 +71,17 @@ final class SystemSampler {
         let system = UInt64(info.cpu_ticks.1)   // SYSTEM
         let idle = UInt64(info.cpu_ticks.2)     // IDLE
         let nice = UInt64(info.cpu_ticks.3)     // NICE
-        let busy = user &+ system &+ nice
-        let total = busy &+ idle
+        // Match RunCat exactly: busy = system + user (nice excluded from the
+        // numerator but kept in the total), capped at 99.9%.
+        let busy = user &+ system
+        let total = user &+ system &+ idle &+ nice
 
         defer { prevCPUBusy = busy; prevCPUTotal = total; cpuPrimed = true }
         guard cpuPrimed else { return 0 }
         let dBusy = Double(busy &- prevCPUBusy)
         let dTotal = Double(total &- prevCPUTotal)
         guard dTotal > 0 else { return 0 }
-        return max(0, min(100, dBusy / dTotal * 100))
+        return max(0, min(99.9, dBusy / dTotal * 100))
     }
 
     // MARK: Memory — (active + wired + compressed) / total
