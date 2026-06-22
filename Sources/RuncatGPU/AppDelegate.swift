@@ -352,9 +352,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cpuUserItem.title = String(format: "    사용자     %.1f%%", m.cpuUser)
         cpuIdleItem.title = String(format: "    대기       %.1f%%", max(0, 100 - m.cpu))
 
-        gpuItem.title = String(format: "GPU(연산)      %.1f%%", m.gpu)
-        gpuRawItem.title = String(format: "    전체·합성  %.0f%%", m.gpuRaw)
-        gpuRenderItem.title = String(format: "    렌더(합성) %.0f%%", m.gpuRender)
+        gpuItem.title = String(format: "GPU            %.0f%%", m.gpuRaw)
+        gpuRawItem.title = String(format: "    렌더(합성)   %.0f%%", m.gpuRender)
+        gpuRenderItem.title = String(format: "    연산(고양이) %.1f%%", m.gpu)
 
         memItem.title = String(format: "메모리         %.1f%%", m.memory)
         memPressItem.title = String(format: "    압력       %.1f%%", m.memPressure)
