@@ -19,9 +19,15 @@ struct Metrics {
 /// per-interval rates.
 final class SystemSampler {
     // CPU tick deltas
+    // CPU smoothing: 1-second instantaneous delta fed through an exponential
+    // moving average (~5 s memory). Smooth + always current, unlike a boxcar
+    // window (which holds a spike for exactly 5 s then drops — looks "bucketed").
     private var prevCPUBusy: UInt64 = 0
     private var prevCPUTotal: UInt64 = 0
     private var cpuPrimed = false
+    private var cpuEMA = 0.0
+    private var cpuEMAPrimed = false
+    private let cpuAlpha = 0.8  // higher = smoother/slower; ~5 s effective memory
     // Network byte deltas
     private var prevRx: UInt64 = 0
     private var prevTx: UInt64 = 0
@@ -80,8 +86,15 @@ final class SystemSampler {
         guard cpuPrimed else { return 0 }
         let dBusy = Double(busy &- prevCPUBusy)
         let dTotal = Double(total &- prevCPUTotal)
-        guard dTotal > 0 else { return 0 }
-        return max(0, min(99.9, dBusy / dTotal * 100))
+        guard dTotal > 0 else { return cpuEMA }
+        let instant = max(0, min(99.9, dBusy / dTotal * 100))
+        if cpuEMAPrimed {
+            cpuEMA = cpuEMA * cpuAlpha + instant * (1 - cpuAlpha)
+        } else {
+            cpuEMA = instant
+            cpuEMAPrimed = true
+        }
+        return cpuEMA
     }
 
     // MARK: Memory — (active + wired + compressed) / total
