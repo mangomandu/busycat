@@ -4,8 +4,12 @@ import IOKit.ps
 
 /// One snapshot of everything RunCat-GPU monitors.
 struct Metrics {
-    var cpu: Double = 0          // %
-    var gpu: Double = 0          // %
+    var cpu: Double = 0          // % (system + user)
+    var cpuSystem: Double = 0    // %
+    var cpuUser: Double = 0      // %
+    var gpu: Double = 0          // % compute (compositing baseline removed)
+    var gpuRaw: Double = 0       // % raw Device Utilization (incl. compositing)
+    var gpuRender: Double = 0    // % Renderer (screen compositing / graphics)
     var memory: Double = 0       // % used
     var disk: Double = 0         // % used on "/"
     var netDown: Double = 0      // bytes/s
@@ -22,10 +26,12 @@ final class SystemSampler {
     // CPU smoothing: 1-second instantaneous delta fed through an exponential
     // moving average (~5 s memory). Smooth + always current, unlike a boxcar
     // window (which holds a spike for exactly 5 s then drops — looks "bucketed").
-    private var prevCPUBusy: UInt64 = 0
-    private var prevCPUTotal: UInt64 = 0
+    private var prevUser: UInt64 = 0
+    private var prevSystem: UInt64 = 0
+    private var prevTotalTicks: UInt64 = 0
     private var cpuPrimed = false
-    private var cpuEMA = 0.0
+    private var sysEMA = 0.0
+    private var userEMA = 0.0
     private var cpuEMAPrimed = false
     private let cpuAlpha = 0.8  // higher = smoother/slower; ~5 s effective memory
     // Network byte deltas
@@ -38,8 +44,14 @@ final class SystemSampler {
     /// single fast kernel calls). Used while the menu is closed — i.e. ~always.
     func sampleLight() -> Metrics {
         var m = Metrics()
-        m.cpu = cpu()
-        m.gpu = GPUReader.usage()
+        let c = cpu()
+        m.cpu = c.total
+        m.cpuSystem = c.system
+        m.cpuUser = c.user
+        let g = GPUReader.stats()
+        m.gpu = g.compute
+        m.gpuRaw = g.raw
+        m.gpuRender = g.render
         m.memory = memoryPercent()
         return m
     }
@@ -61,7 +73,7 @@ final class SystemSampler {
 
     // MARK: CPU — busy% over the interval (HOST_CPU_LOAD_INFO tick delta)
 
-    private func cpu() -> Double {
+    private func cpu() -> (total: Double, system: Double, user: Double) {
         var info = host_cpu_load_info()
         var count = mach_msg_type_number_t(
             MemoryLayout<host_cpu_load_info>.stride / MemoryLayout<integer_t>.stride
@@ -71,30 +83,34 @@ final class SystemSampler {
                 host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, reb, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return 0 }
+        guard result == KERN_SUCCESS else { return (0, 0, 0) }
 
         let user = UInt64(info.cpu_ticks.0)     // USER
         let system = UInt64(info.cpu_ticks.1)   // SYSTEM
         let idle = UInt64(info.cpu_ticks.2)     // IDLE
         let nice = UInt64(info.cpu_ticks.3)     // NICE
-        // Match RunCat exactly: busy = system + user (nice excluded from the
-        // numerator but kept in the total), capped at 99.9%.
-        let busy = user &+ system
-        let total = user &+ system &+ idle &+ nice
+        // Normalized usage like RunCat: system & user as a fraction of total
+        // (nice in the denominator only). Each smoothed with its own EMA so the
+        // breakdown stays consistent (total = system + user).
+        let totalTicks = user &+ system &+ idle &+ nice
 
-        defer { prevCPUBusy = busy; prevCPUTotal = total; cpuPrimed = true }
-        guard cpuPrimed else { return 0 }
-        let dBusy = Double(busy &- prevCPUBusy)
-        let dTotal = Double(total &- prevCPUTotal)
-        guard dTotal > 0 else { return cpuEMA }
-        let instant = max(0, min(99.9, dBusy / dTotal * 100))
+        defer { prevUser = user; prevSystem = system; prevTotalTicks = totalTicks; cpuPrimed = true }
+        guard cpuPrimed else { return (0, 0, 0) }
+        let dUser = Double(user &- prevUser)
+        let dSys = Double(system &- prevSystem)
+        let dTotal = Double(totalTicks &- prevTotalTicks)
+        guard dTotal > 0 else { return (min(99.9, sysEMA + userEMA), sysEMA, userEMA) }
+        let instSys = dSys / dTotal * 100
+        let instUser = dUser / dTotal * 100
         if cpuEMAPrimed {
-            cpuEMA = cpuEMA * cpuAlpha + instant * (1 - cpuAlpha)
+            sysEMA = sysEMA * cpuAlpha + instSys * (1 - cpuAlpha)
+            userEMA = userEMA * cpuAlpha + instUser * (1 - cpuAlpha)
         } else {
-            cpuEMA = instant
+            sysEMA = instSys
+            userEMA = instUser
             cpuEMAPrimed = true
         }
-        return cpuEMA
+        return (min(99.9, sysEMA + userEMA), sysEMA, userEMA)
     }
 
     // MARK: Memory — (active + wired + compressed) / total
@@ -216,16 +232,24 @@ enum GPUReader {
     /// (embeddings) still reaches ~100. Tune `compositingFloor` to taste.
     static let compositingFloor = 30.0
 
-    static func usage() -> Double {
+    static func usage() -> Double { stats().compute }
+
+    /// Returns the GPU breakdown in one registry read:
+    ///   - raw:     "Device Utilization %" (total busy, incl. compositing)
+    ///   - render:  "Renderer Utilization %" (screen compositing / graphics)
+    ///   - compute: raw with the compositing baseline removed (drives the cat)
+    static func stats() -> (compute: Double, raw: Double, render: Double) {
         if cachedService == 0 { cachedService = findAccelerator() }
-        guard cachedService != 0 else { return 0 }
+        guard cachedService != 0 else { return (0, 0, 0) }
         guard let perf = perfStats(cachedService) else {
             IOObjectRelease(cachedService)  // service vanished — re-match next time
             cachedService = 0
-            return 0
+            return (0, 0, 0)
         }
         let raw = min(100, deviceUsage(perf))
-        return max(0, (raw - compositingFloor) / (100 - compositingFloor) * 100)
+        let render = min(100, Double(perf["Renderer Utilization %"] as? Int ?? 0))
+        let compute = max(0, (raw - compositingFloor) / (100 - compositingFloor) * 100)
+        return (compute, raw, render)
     }
 
     /// First IOAccelerator that exposes PerformanceStatistics (one AGX GPU on

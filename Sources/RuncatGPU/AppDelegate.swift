@@ -95,7 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private let cpuItem = NSMenuItem(title: "CPU", action: nil, keyEquivalent: "")
+    private let cpuSysItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let cpuUserItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let gpuItem = NSMenuItem(title: "GPU", action: nil, keyEquivalent: "")
+    private let gpuRawItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let gpuRenderItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let memItem = NSMenuItem(title: "메모리", action: nil, keyEquivalent: "")
     private let diskItem = NSMenuItem(title: "디스크", action: nil, keyEquivalent: "")
     private let netItem = NSMenuItem(title: "네트워크", action: nil, keyEquivalent: "")
@@ -230,7 +234,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Menu
 
     private func buildMenu() {
-        for item in [cpuItem, gpuItem, memItem, diskItem, netItem, batItem] {
+        let rows = [cpuItem, cpuSysItem, cpuUserItem,
+                    gpuItem, gpuRawItem, gpuRenderItem,
+                    memItem, diskItem, netItem, batItem]
+        for item in rows {
             item.isEnabled = false
             menu.addItem(item)
         }
@@ -336,10 +343,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshMenuTitles() {
-        cpuItem.title = String(format: "CPU         %5.1f%%", latest.cpu)
-        gpuItem.title = String(format: "GPU         %5.1f%%", latest.gpu)
-        memItem.title = String(format: "메모리      %5.1f%%", latest.memory)
-        diskItem.title = String(format: "디스크      %5.1f%%", latest.disk)
+        cpuItem.title = String(format: "CPU              %5.1f%%", latest.cpu)
+        cpuSysItem.title = String(format: "     시스템      %5.1f%%", latest.cpuSystem)
+        cpuUserItem.title = String(format: "     사용자      %5.1f%%", latest.cpuUser)
+        gpuItem.title = String(format: "GPU(연산)        %5.1f%%", latest.gpu)
+        gpuRawItem.title = String(format: "     전체·합성   %5.0f%%", latest.gpuRaw)
+        gpuRenderItem.title = String(format: "     렌더(합성)  %5.0f%%", latest.gpuRender)
+        memItem.title = String(format: "메모리           %5.1f%%", latest.memory)
+        diskItem.title = String(format: "디스크           %5.1f%%", latest.disk)
         netItem.title = "네트워크  ↓\(rate(latest.netDown))  ↑\(rate(latest.netUp))"
         if let b = latest.battery {
             batItem.title = "배터리      \(b)%\(latest.charging ? " ⚡" : "")"
