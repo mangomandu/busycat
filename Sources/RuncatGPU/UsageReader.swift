@@ -1,21 +1,40 @@
 import Foundation
 import IOKit
-import IOKit.ps
+import SystemConfiguration
 
-/// One snapshot of everything RunCat-GPU monitors.
+/// One snapshot of everything RunCat-GPU monitors. Formulas mirror Activity
+/// Monitor / RunCat (verified by reverse-engineering RunCat's detail menu).
 struct Metrics {
-    var cpu: Double = 0          // % (system + user)
+    // CPU (normalized: fraction of total capacity, like AM's bottom load bar)
+    var cpu: Double = 0          // % = system + user
     var cpuSystem: Double = 0    // %
     var cpuUser: Double = 0      // %
-    var gpu: Double = 0          // % compute (compositing baseline removed)
+    // GPU
+    var gpu: Double = 0          // % compute (compositing baseline removed) — drives the cat
     var gpuRaw: Double = 0       // % raw Device Utilization (incl. compositing)
     var gpuRender: Double = 0    // % Renderer (screen compositing / graphics)
+    // Memory (Activity Monitor "Memory Used" = App + Wired + Compressed)
     var memory: Double = 0       // % used
-    var disk: Double = 0         // % used on "/"
+    var memPressure: Double = 0  // % = (wired + compressed) / total
+    var memApp: Double = 0       // bytes (anonymous − purgeable)
+    var memWired: Double = 0     // bytes
+    var memCompressed: Double = 0 // bytes
+    // Disk (root volume, Finder convention: purgeable counts as free)
+    var disk: Double = 0         // % used
+    var diskUsed: Double = 0     // bytes
+    var diskTotal: Double = 0    // bytes
+    // Network
     var netDown: Double = 0      // bytes/s
     var netUp: Double = 0        // bytes/s
-    var battery: Int? = nil      // % (nil on desktop Macs)
+    var netType: String = "—"    // "Wi-Fi" / "이더넷" …
+    var localIP: String = "—"
+    // Battery (nil on desktop Macs)
+    var battery: Double? = nil   // %
     var charging: Bool = false
+    var onAC: Bool = false
+    var batHealth: Double? = nil // % maximum capacity
+    var batCycles: Int? = nil
+    var batTemp: Double? = nil   // °C
 }
 
 /// Samples all system metrics. Holds the small bit of state needed to turn the
@@ -52,22 +71,37 @@ final class SystemSampler {
         m.gpu = g.compute
         m.gpuRaw = g.raw
         m.gpuRender = g.render
-        m.memory = memoryPercent()
+        let mem = memory()
+        m.memory = mem.percent
+        m.memPressure = mem.pressure
+        m.memApp = mem.app
+        m.memWired = mem.wired
+        m.memCompressed = mem.compressed
         return m
     }
 
     /// Full snapshot including the costlier reads (disk volume query, getifaddrs,
-    /// IOKit power source). Only worth doing while the menu is actually open, since
-    /// those extra rows aren't visible otherwise.
+    /// IOKit). Only worth doing while the menu is actually open, since those extra
+    /// rows aren't visible otherwise.
     func sampleAll() -> Metrics {
         var m = sampleLight()
-        m.disk = diskPercent()
+        let d = disk()
+        m.disk = d.percent
+        m.diskUsed = d.used
+        m.diskTotal = d.total
         let net = network()
         m.netDown = net.down
         m.netUp = net.up
+        let info = networkInfo()
+        m.netType = info.type
+        m.localIP = info.ip
         let bat = battery()
         m.battery = bat.percent
         m.charging = bat.charging
+        m.onAC = bat.onAC
+        m.batHealth = bat.health
+        m.batCycles = bat.cycles
+        m.batTemp = bat.temp
         return m
     }
 
@@ -113,9 +147,10 @@ final class SystemSampler {
         return (min(99.9, sysEMA + userEMA), sysEMA, userEMA)
     }
 
-    // MARK: Memory — (active + wired + compressed) / total
+    // MARK: Memory — Activity Monitor's model: Used = App + Wired + Compressed,
+    // where App Memory = (anonymous − purgeable). Pressure = (wired+compressed)/total.
 
-    private func memoryPercent() -> Double {
+    private func memory() -> (percent: Double, pressure: Double, app: Double, wired: Double, compressed: Double) {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
             MemoryLayout<vm_statistics64>.stride / MemoryLayout<integer_t>.stride
@@ -125,28 +160,33 @@ final class SystemSampler {
                 host_statistics64(mach_host_self(), HOST_VM_INFO64, reb, &count)
             }
         }
-        guard kr == KERN_SUCCESS else { return 0 }
-        let pageSize = UInt64(vm_kernel_page_size)
-        let used = (UInt64(stats.active_count)
-            + UInt64(stats.wire_count)
-            + UInt64(stats.compressor_page_count)) * pageSize
+        guard kr == KERN_SUCCESS else { return (0, 0, 0, 0, 0) }
+        let pageSize = Double(vm_kernel_page_size)
+        let wired = Double(stats.wire_count) * pageSize
+        let compressed = Double(stats.compressor_page_count) * pageSize
+        // App Memory = anonymous (internal) minus purgeable.
+        let app = Double(max(0, Int64(stats.internal_page_count) - Int64(stats.purgeable_count))) * pageSize
         var total: UInt64 = 0
         var size = MemoryLayout<UInt64>.size
         sysctlbyname("hw.memsize", &total, &size, nil, 0)
-        guard total > 0 else { return 0 }
-        return min(100, Double(used) / Double(total) * 100)
+        guard total > 0 else { return (0, 0, 0, 0, 0) }
+        let used = app + wired + compressed
+        let pct = min(100, used / Double(total) * 100)
+        let pressure = min(100, (wired + compressed) / Double(total) * 100)
+        return (pct, pressure, app, wired, compressed)
     }
 
-    // MARK: Disk — used% of the root volume
+    // MARK: Disk — root volume; available counts purgeable as free (Finder/RunCat).
 
-    private func diskPercent() -> Double {
+    private func disk() -> (percent: Double, used: Double, total: Double) {
         let url = URL(fileURLWithPath: "/")
         guard let v = try? url.resourceValues(
-            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey]),
-            let total = v.volumeTotalCapacity, let avail = v.volumeAvailableCapacity,
-            total > 0
-        else { return 0 }
-        return max(0, min(100, Double(total - avail) / Double(total) * 100))
+            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
+            let total = v.volumeTotalCapacity,
+            let avail = v.volumeAvailableCapacityForImportantUsage, total > 0
+        else { return (0, 0, 0) }
+        let used = Double(total) - Double(avail)
+        return (max(0, min(100, used / Double(total) * 100)), used, Double(total))
     }
 
     // MARK: Network — bytes/s up & down across physical interfaces
@@ -185,23 +225,75 @@ final class SystemSampler {
         return (down, up)
     }
 
-    // MARK: Battery — % and charging state (nil on desktops)
+    // MARK: Battery — AppleSmartBattery (raw mAh → decimal %, health, cycles, temp)
 
-    private func battery() -> (percent: Int?, charging: Bool) {
-        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
-            let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
-        else { return (nil, false) }
-        for ps in list {
-            guard let desc = IOPSGetPowerSourceDescription(blob, ps)?
-                .takeUnretainedValue() as? [String: Any] else { continue }
-            let cur = desc[kIOPSCurrentCapacityKey] as? Int
-            let mx = desc[kIOPSMaxCapacityKey] as? Int ?? 100
-            let charging = (desc[kIOPSPowerSourceStateKey] as? String) == kIOPSACPowerValue
-            if let c = cur, mx > 0 {
-                return (Int((Double(c) / Double(mx) * 100).rounded()), charging)
-            }
+    private func battery() -> (percent: Double?, charging: Bool, onAC: Bool,
+                               health: Double?, cycles: Int?, temp: Double?) {
+        let svc = IOServiceGetMatchingService(kIOMainPortDefault,
+                                              IOServiceMatching("AppleSmartBattery"))
+        guard svc != 0 else { return (nil, false, false, nil, nil, nil) }
+        defer { IOObjectRelease(svc) }
+        var unmanaged: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(svc, &unmanaged, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+            let d = unmanaged?.takeRetainedValue() as? [String: Any]
+        else { return (nil, false, false, nil, nil, nil) }
+
+        let rawCur = d["AppleRawCurrentCapacity"] as? Int
+        let rawMax = d["AppleRawMaxCapacity"] as? Int
+        let design = d["DesignCapacity"] as? Int
+        let onAC = (d["ExternalConnected"] as? Bool) ?? false
+        let charging = (d["IsCharging"] as? Bool) ?? false
+        let cycles = d["CycleCount"] as? Int
+        let temp = (d["Temperature"] as? Int).map { Double($0) / 100 }
+
+        var pct: Double? = nil
+        if let c = rawCur, let m = rawMax, m > 0 { pct = Double(c) / Double(m) * 100 }
+        var health: Double? = nil
+        if let m = rawMax, let dz = design, dz > 0 { health = min(100, Double(m) / Double(dz) * 100) }
+        return (pct, charging, onAC, health, cycles, temp)
+    }
+
+    // MARK: Network type + local IPv4 of the primary interface
+
+    private func networkInfo() -> (type: String, ip: String) {
+        var bsd: String?
+        if let store = SCDynamicStoreCreate(nil, "RuncatGPU" as CFString, nil, nil),
+            let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString)
+                as? [String: Any] {
+            bsd = dict["PrimaryInterface"] as? String
         }
-        return (nil, false)
+        let ip = ipv4(for: bsd)
+        let type = bsd.flatMap(interfaceDisplayName) ?? "—"
+        return (type, ip)
+    }
+
+    private func ipv4(for iface: String?) -> String {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return "—" }
+        defer { freeifaddrs(ifaddr) }
+        var fallback = "—"
+        var ptr = ifaddr
+        while let p = ptr {
+            defer { ptr = p.pointee.ifa_next }
+            guard let addr = p.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: p.pointee.ifa_name)
+            if name.hasPrefix("lo") { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
+                        nil, 0, NI_NUMERICHOST)
+            let ip = String(cString: host)
+            if let want = iface, name == want { return ip }
+            if fallback == "—" { fallback = ip }
+        }
+        return fallback
+    }
+
+    private func interfaceDisplayName(_ bsd: String) -> String? {
+        guard let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else { return nil }
+        for i in all where (SCNetworkInterfaceGetBSDName(i) as String?) == bsd {
+            return SCNetworkInterfaceGetLocalizedDisplayName(i) as String?
+        }
+        return nil
     }
 }
 
