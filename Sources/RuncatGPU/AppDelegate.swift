@@ -1,32 +1,52 @@
 /*
- AppDelegate.swift — light-render improvement over the vanilla RunCat clone.
+ AppDelegate.swift — full RuncatGPU on the light (CALayer) renderer.
 
- Same RunCat logic (CPU-driven, `0.2 / clamp(usage/5, 1...20)` speed, 5 s CPU
- sampling), but the cat is drawn into a CALayer and animated by swapping
- `layer.contents` from a timer — NOT by setting `button.image`.
+ Combines:
+   • light-render: cat drawn in a sublayer, animated by swapping layer.contents
+     from a timer (no button.image → no menu-bar background recomposite; no
+     CAKeyframeAnimation clock → no stutter). ~0.5% CPU on macOS 26.
+   • full features: GPU + CPU + memory + disk + network + battery, selectable
+     speed driver, show-%/invert/flip/launch-at-login, sleep-wake. The costly
+     metrics are sampled only while the menu is open.
 
- Why: on macOS 26, setting `button.image` each frame makes the status item
- redraw through NSStatusBarButtonCell → drawBackgroundInRect:, recompositing the
- translucent menu-bar background every frame (~5% CPU here for identical code,
- vs ~0.8% for the App Store RunCat). Updating a sublayer's contents skips the
- cell/background redraw entirely, so it's cheap — and because we step frames
- manually on a timer (no CAKeyframeAnimation clock to re-time), it never stutters.
- Rendering being cheap means we can drop the fps cap and match RunCat's 5→100 fps.
-
- Manual tinting is required because CALayer contents don't auto-invert like a
- template image; we re-tint on dark/light changes.
+ Speed curve is a gentle linear idleFPS→maxFPS (calmer than RunCat's fps==usage%);
+ both ends are tunable constants below.
 */
 
 import Cocoa
+import ServiceManagement
+
+enum SpeedDriver: String, CaseIterable {
+    case busiest, cpu, gpu, memory
+
+    var label: String {
+        switch self {
+        case .busiest: return "가장 바쁜 쪽 (CPU·GPU)"
+        case .cpu: return "CPU"
+        case .gpu: return "GPU"
+        case .memory: return "메모리"
+        }
+    }
+
+    func value(_ m: Metrics) -> Double {
+        switch self {
+        case .busiest: return max(m.cpu, m.gpu)
+        case .cpu: return m.cpu
+        case .gpu: return m.gpu
+        case .memory: return m.memory
+        }
+    }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let barHeight: CGFloat = 18
+    private let idleFPS = 5.0    // speed at ~0% load
+    private let maxFPS = 22.0    // speed at 100% load (tune to taste)
     private let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
 
     private lazy var statusItem: NSStatusItem = {
         NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     }()
-    private let menu = NSMenu()
     private let container = NSView()
     private let spriteLayer = CALayer()
     private let textLayer = CATextLayer()
@@ -34,26 +54,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tintIsLight = true
 
     private var index = 0
-    private var interval: Double = 1.0
-    private let cpu = CPU()
-    private var usage: CPUInfo = CPU.default
-    private var cpuTimer: Timer?
     private var runnerTimer: Timer?
-    private var isShowUsage = false
+    private var sampleTimer: Timer?
+    private var currentInterval: TimeInterval = 0.2
+    private var asleep = false
+
+    private let sampler = SystemSampler()
+    private var latest = Metrics()
+    private var menuOpen = false
+
+    private let defaults = UserDefaults.standard
+    private var driver: SpeedDriver {
+        get { SpeedDriver(rawValue: defaults.string(forKey: "driver") ?? "") ?? .busiest }
+        set { defaults.set(newValue.rawValue, forKey: "driver") }
+    }
+    private var showText: Bool {
+        get { defaults.bool(forKey: "showText") }
+        set { defaults.set(newValue, forKey: "showText") }
+    }
+    private var invert: Bool {
+        get { defaults.bool(forKey: "invert") }
+        set { defaults.set(newValue, forKey: "invert") }
+    }
+    private var flip: Bool {
+        get { defaults.bool(forKey: "flip") }
+        set { defaults.set(newValue, forKey: "flip") }
+    }
+
+    private let cpuItem = NSMenuItem(title: "CPU", action: nil, keyEquivalent: "")
+    private let gpuItem = NSMenuItem(title: "GPU", action: nil, keyEquivalent: "")
+    private let memItem = NSMenuItem(title: "메모리", action: nil, keyEquivalent: "")
+    private let diskItem = NSMenuItem(title: "디스크", action: nil, keyEquivalent: "")
+    private let netItem = NSMenuItem(title: "네트워크", action: nil, keyEquivalent: "")
+    private let batItem = NSMenuItem(title: "배터리", action: nil, keyEquivalent: "")
+    private var driverItems: [NSMenuItem] = []
+    private var showTextItem: NSMenuItem!
+    private var invertItem: NSMenuItem!
+    private var flipItem: NSMenuItem!
+    private var loginItem: NSMenuItem!
+    private let menu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupSprite()
-        setupMenu()
+        buildMenu()
+        registerSleepWake()
         rebuildArtwork()
         layout()
-        startRunning()
+        _ = sampler.sampleAll()  // prime counters
+        startAnimation(interval: currentInterval)
+        sampleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        sampleTimer?.tolerance = 0.2
+        tick()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        stopRunning()
+        runnerTimer?.invalidate()
+        sampleTimer?.invalidate()
     }
 
-    // MARK: Sprite (cat drawn in a sublayer, not button.image)
+    // MARK: Sprite (cat in a sublayer; contents swapped by the timer)
 
     private func setupSprite() {
         guard let button = statusItem.button else { return }
@@ -82,7 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tintIsLight = isLightMenuBar()
         let color: NSColor = tintIsLight ? .black : .white
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        tintedFrames = CatFrames.load(height: barHeight).compactMap { tinted($0, color: color, scale: scale) }
+        tintedFrames = CatFrames.load(height: barHeight, flipped: flip)
+            .compactMap { tinted($0, color: color, scale: scale) }
         textLayer.foregroundColor = color.cgColor
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -123,8 +185,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         var x: CGFloat = 0
-        if isShowUsage {
-            let s = usage.description
+        if showText {
+            let s = String(format: "%.0f%%", driver.value(latest))
             let tw = (s as NSString).size(withAttributes: [.font: font]).width.rounded() + 4
             let lh = (font.ascender - font.descender).rounded()
             textLayer.isHidden = false
@@ -141,56 +203,190 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Menu
 
-    private func setupMenu() {
-        menu.addItem(withTitle: "Show CPU Usage", action: #selector(toggleShowUsage(_:)), keyEquivalent: "")
+    private func buildMenu() {
+        for item in [cpuItem, gpuItem, memItem, diskItem, netItem, batItem] {
+            item.isEnabled = false
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "About", action: #selector(openAbout(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Quit", action: #selector(terminateApp(_:)), keyEquivalent: "q")
+
+        let driverParent = NSMenuItem(title: "속도 기준", action: nil, keyEquivalent: "")
+        let driverMenu = NSMenu()
+        for d in SpeedDriver.allCases {
+            let it = NSMenuItem(title: d.label, action: #selector(selectDriver(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = d.rawValue
+            it.state = (d == driver) ? .on : .off
+            driverMenu.addItem(it)
+            driverItems.append(it)
+        }
+        driverParent.submenu = driverMenu
+        menu.addItem(driverParent)
+
+        showTextItem = toggle("메뉴바에 % 표시", #selector(toggleShowText), showText)
+        invertItem = toggle("속도 반전 (바쁘면 느리게)", #selector(toggleInvert), invert)
+        flipItem = toggle("좌우 반전", #selector(toggleFlip), flip)
+        loginItem = toggle("로그인 시 자동 실행", #selector(toggleLogin), isLoginEnabled())
+        for it in [showTextItem!, invertItem!, flipItem!, loginItem!] { menu.addItem(it) }
+
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "RuncatGPU 종료", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        menu.delegate = self
         statusItem.menu = menu
     }
 
-    @objc func toggleShowUsage(_ sender: NSMenuItem) {
-        isShowUsage = (sender.state == .off)
-        sender.state = isShowUsage ? .on : .off
-        layout()
+    private func toggle(_ title: String, _ action: Selector, _ on: Bool) -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        it.target = self
+        it.state = on ? .on : .off
+        return it
     }
 
-    @objc func openAbout(_ sender: Any?) {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.orderFrontStandardAboutPanel(nil)
+    // MARK: Sampling + animation
+
+    private func tick() {
+        if menuOpen {
+            latest = sampler.sampleAll()
+            refreshMenuTitles()
+        } else {
+            let light = sampler.sampleLight()
+            latest.cpu = light.cpu
+            latest.gpu = light.gpu
+            latest.memory = light.memory
+        }
+        if showText { layout() }
+
+        guard !asleep else { return }
+        var usage = driver.value(latest)
+        if invert { usage = 100 - usage }
+        let target = interval(forUsage: usage)
+        if abs(target - currentInterval) > 0.003 {
+            currentInterval = target
+            startAnimation(interval: target)  // index preserved → seamless
+        }
     }
 
-    @objc func terminateApp(_ sender: Any?) {
-        NSApp.terminate(nil)
+    /// Gentle linear map: idle→idleFPS, full load→maxFPS.
+    private func interval(forUsage usage: Double) -> TimeInterval {
+        let u = max(0, min(100, usage)) / 100
+        return 1.0 / (idleFPS + u * (maxFPS - idleFPS))
     }
 
-    // MARK: Run loop (RunCat timing; only the frame swap differs)
-
-    private func startRunning() {
-        cpuTimer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in self?.updateUsage() }
-        RunLoop.main.add(cpuTimer!, forMode: .common)
-        cpuTimer?.fire()
-    }
-
-    private func stopRunning() {
+    private func startAnimation(interval: TimeInterval) {
         runnerTimer?.invalidate()
-        cpuTimer?.invalidate()
-    }
-
-    private func updateUsage() {
-        usage = cpu.currentUsage()
-        if isLightMenuBar() != tintIsLight { rebuildArtwork() }
-        interval = 0.2 / max(1.0, min(20.0, usage.value / 5.0))
-        if isShowUsage { layout() }
-        runnerTimer?.invalidate()
-        runnerTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.next() }
-        RunLoop.main.add(runnerTimer!, forMode: .common)
+        guard !tintedFrames.isEmpty else { return }
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.next() }
+        timer.tolerance = interval * 0.1
+        RunLoop.main.add(timer, forMode: .common)
+        runnerTimer = timer
     }
 
     private func next() {
         guard !tintedFrames.isEmpty else { return }
         index = (index + 1) % tintedFrames.count
-        // The cheap part: swap one layer's contents — no cell/background redraw.
-        spriteLayer.contents = tintedFrames[index]
+        spriteLayer.contents = tintedFrames[index]  // cheap: no cell/background redraw
+    }
+
+    private func refreshMenuTitles() {
+        cpuItem.title = String(format: "CPU         %5.1f%%", latest.cpu)
+        gpuItem.title = String(format: "GPU         %5.1f%%", latest.gpu)
+        memItem.title = String(format: "메모리      %5.1f%%", latest.memory)
+        diskItem.title = String(format: "디스크      %5.1f%%", latest.disk)
+        netItem.title = "네트워크  ↓\(rate(latest.netDown))  ↑\(rate(latest.netUp))"
+        if let b = latest.battery {
+            batItem.title = "배터리      \(b)%\(latest.charging ? " ⚡" : "")"
+        } else {
+            batItem.title = "배터리      —"
+        }
+    }
+
+    private func rate(_ bps: Double) -> String {
+        if bps >= 1_000_000 { return String(format: "%.1fMB/s", bps / 1_000_000) }
+        if bps >= 1_000 { return String(format: "%.0fKB/s", bps / 1_000) }
+        return String(format: "%.0fB/s", bps)
+    }
+
+    // MARK: Actions
+
+    @objc private func selectDriver(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let d = SpeedDriver(rawValue: raw)
+        else { return }
+        driver = d
+        for it in driverItems { it.state = (it === sender) ? .on : .off }
+        tick()
+    }
+
+    @objc private func toggleShowText() {
+        showText.toggle()
+        showTextItem.state = showText ? .on : .off
+        layout()
+    }
+
+    @objc private func toggleInvert() {
+        invert.toggle()
+        invertItem.state = invert ? .on : .off
+        tick()
+    }
+
+    @objc private func toggleFlip() {
+        flip.toggle()
+        flipItem.state = flip ? .on : .off
+        rebuildArtwork()
+    }
+
+    @objc private func toggleLogin() {
+        setLogin(!isLoginEnabled())
+        loginItem.state = isLoginEnabled() ? .on : .off
+    }
+
+    @objc private func quit() { NSApp.terminate(nil) }
+
+    private func isLoginEnabled() -> Bool {
+        if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .enabled }
+        return false
+    }
+
+    private func setLogin(_ on: Bool) {
+        if #available(macOS 13.0, *) {
+            do {
+                if on { try SMAppService.mainApp.register() }
+                else { try SMAppService.mainApp.unregister() }
+            } catch { NSLog("RuncatGPU login item error: \(error)") }
+        }
+    }
+
+    // MARK: Sleep / wake
+
+    private func registerSleepWake() {
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(self, selector: #selector(onSleep),
+                       name: NSWorkspace.willSleepNotification, object: nil)
+        nc.addObserver(self, selector: #selector(onWake),
+                       name: NSWorkspace.didWakeNotification, object: nil)
+    }
+
+    @objc private func onSleep() {
+        asleep = true
+        runnerTimer?.invalidate()
+        runnerTimer = nil
+    }
+
+    @objc private func onWake() {
+        asleep = false
+        _ = sampler.sampleAll()
+        startAnimation(interval: currentInterval)
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        menuOpen = true
+        tick()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuOpen = false
     }
 }
