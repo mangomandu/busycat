@@ -42,17 +42,12 @@ struct Metrics {
 /// per-interval rates.
 final class SystemSampler {
     // CPU tick deltas
-    // CPU smoothing: 1-second instantaneous delta fed through an exponential
-    // moving average (~5 s memory). Smooth + always current, unlike a boxcar
-    // window (which holds a spike for exactly 5 s then drops — looks "bucketed").
+    // CPU: real-time — the raw busy fraction over the last sample interval (~1 s),
+    // no smoothing (matches Activity Monitor's live reading more closely).
     private var prevUser: UInt64 = 0
     private var prevSystem: UInt64 = 0
     private var prevTotalTicks: UInt64 = 0
     private var cpuPrimed = false
-    private var sysEMA = 0.0
-    private var userEMA = 0.0
-    private var cpuEMAPrimed = false
-    private let cpuAlpha = 0.8  // higher = smoother/slower; ~5 s effective memory
     // Network byte deltas
     private var prevRx: UInt64 = 0
     private var prevTx: UInt64 = 0
@@ -133,18 +128,10 @@ final class SystemSampler {
         let dUser = Double(user &- prevUser)
         let dSys = Double(system &- prevSystem)
         let dTotal = Double(totalTicks &- prevTotalTicks)
-        guard dTotal > 0 else { return (min(99.9, sysEMA + userEMA), sysEMA, userEMA) }
-        let instSys = dSys / dTotal * 100
-        let instUser = dUser / dTotal * 100
-        if cpuEMAPrimed {
-            sysEMA = sysEMA * cpuAlpha + instSys * (1 - cpuAlpha)
-            userEMA = userEMA * cpuAlpha + instUser * (1 - cpuAlpha)
-        } else {
-            sysEMA = instSys
-            userEMA = instUser
-            cpuEMAPrimed = true
-        }
-        return (min(99.9, sysEMA + userEMA), sysEMA, userEMA)
+        guard dTotal > 0 else { return (0, 0, 0) }
+        let sys = dSys / dTotal * 100
+        let usr = dUser / dTotal * 100
+        return (min(99.9, sys + usr), sys, usr)
     }
 
     // MARK: Memory — Activity Monitor's model: Used = App + Wired + Compressed,
