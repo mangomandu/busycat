@@ -164,8 +164,9 @@ final class SystemSampler {
         let pageSize = Double(vm_kernel_page_size)
         let wired = Double(stats.wire_count) * pageSize
         let compressed = Double(stats.compressor_page_count) * pageSize
-        // App Memory = anonymous (internal) minus purgeable.
-        let app = Double(max(0, Int64(stats.internal_page_count) - Int64(stats.purgeable_count))) * pageSize
+        // App Memory = anonymous pages (internal_page_count), matching Activity
+        // Monitor's "App Memory" (purgeable included).
+        let app = Double(stats.internal_page_count) * pageSize
         var total: UInt64 = 0
         var size = MemoryLayout<UInt64>.size
         sysctlbyname("hw.memsize", &total, &size, nil, 0)
