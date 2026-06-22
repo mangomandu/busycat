@@ -78,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { defaults.set(newValue.rawValue, forKey: "driver") }
     }
     private var catColor: CatColor {
-        get { CatColor(rawValue: defaults.string(forKey: "catColor") ?? "") ?? .auto }
+        get { CatColor(rawValue: defaults.string(forKey: "catColor") ?? "") ?? .white }
         set { defaults.set(newValue.rawValue, forKey: "catColor") }
     }
     private var showText: Bool {
@@ -261,6 +261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for it in [showTextItem!, invertItem!, flipItem!, loginItem!] { menu.addItem(it) }
 
         menu.addItem(.separator())
+        let activity = NSMenuItem(title: "활성 상태 보기 열기",
+                                  action: #selector(openActivityMonitor), keyEquivalent: "")
+        activity.target = self
+        menu.addItem(activity)
         let quit = NSMenuItem(title: "RuncatGPU 종료", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -294,7 +298,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var usage = driver.value(latest)
         if invert { usage = 100 - usage }
         let target = interval(forUsage: usage)
-        if abs(target - currentInterval) > 0.003 {
+        // Tiny threshold so speed tracks fractional load (note: GPU% from IOKit is
+        // integer-resolution, so GPU-driven speed steps in whole percents).
+        if abs(target - currentInterval) > 0.0005 {
             currentInterval = target
             startAnimation(interval: target)
         }
@@ -379,6 +385,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleLogin() {
         setLogin(!isLoginEnabled())
         loginItem.state = isLoginEnabled() ? .on : .off
+    }
+
+    @objc private func openActivityMonitor() {
+        guard let url = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: "com.apple.ActivityMonitor") else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
