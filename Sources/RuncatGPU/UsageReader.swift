@@ -42,17 +42,26 @@ struct Metrics {
 /// per-interval rates.
 final class SystemSampler {
     // CPU tick deltas
-    // CPU: real-time — the raw busy fraction over the last sample interval (~1 s),
-    // no smoothing (matches Activity Monitor's live reading more closely).
+    // ~5-second exponential moving average for the fast/jittery rate metrics
+    // (CPU, network), so the numbers read stable like Activity Monitor (which
+    // averages over its ~5s update interval) and brief spikes — e.g. another app's
+    // menu rendering — don't make the cat sprint.
+    private let emaAlpha = 0.8  // exp(-1/5): ~5-second memory
     private var prevUser: UInt64 = 0
     private var prevSystem: UInt64 = 0
     private var prevTotalTicks: UInt64 = 0
     private var cpuPrimed = false
+    private var sysEMA = 0.0
+    private var userEMA = 0.0
+    private var cpuEMAPrimed = false
     // Network byte deltas
     private var prevRx: UInt64 = 0
     private var prevTx: UInt64 = 0
     private var prevNetTime: Double = 0
     private var netPrimed = false
+    private var downEMA = 0.0
+    private var upEMA = 0.0
+    private var netEMAPrimed = false
 
     /// Cheap metrics needed every second to drive the cat (CPU/GPU/memory are all
     /// single fast kernel calls). Used while the menu is closed — i.e. ~always.
@@ -128,10 +137,18 @@ final class SystemSampler {
         let dUser = Double(user &- prevUser)
         let dSys = Double(system &- prevSystem)
         let dTotal = Double(totalTicks &- prevTotalTicks)
-        guard dTotal > 0 else { return (0, 0, 0) }
-        let sys = dSys / dTotal * 100
-        let usr = dUser / dTotal * 100
-        return (min(99.9, sys + usr), sys, usr)
+        guard dTotal > 0 else { return (min(99.9, sysEMA + userEMA), sysEMA, userEMA) }
+        let instSys = dSys / dTotal * 100
+        let instUser = dUser / dTotal * 100
+        if cpuEMAPrimed {
+            sysEMA = sysEMA * emaAlpha + instSys * (1 - emaAlpha)
+            userEMA = userEMA * emaAlpha + instUser * (1 - emaAlpha)
+        } else {
+            sysEMA = instSys
+            userEMA = instUser
+            cpuEMAPrimed = true
+        }
+        return (min(99.9, sysEMA + userEMA), sysEMA, userEMA)
     }
 
     // MARK: Memory — Activity Monitor's model: Used = App + Wired + Compressed,
@@ -210,7 +227,15 @@ final class SystemSampler {
         // ifi_*bytes are 32-bit and can wrap; clamp negative deltas to 0.
         let down = rx >= prevRx ? Double(rx - prevRx) / dt : 0
         let up = tx >= prevTx ? Double(tx - prevTx) / dt : 0
-        return (down, up)
+        if netEMAPrimed {
+            downEMA = downEMA * emaAlpha + down * (1 - emaAlpha)
+            upEMA = upEMA * emaAlpha + up * (1 - emaAlpha)
+        } else {
+            downEMA = down
+            upEMA = up
+            netEMAPrimed = true
+        }
+        return (downEMA, upEMA)
     }
 
     // MARK: Battery — AppleSmartBattery (raw mAh → decimal %, health, cycles, temp)
