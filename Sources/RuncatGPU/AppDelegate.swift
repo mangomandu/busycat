@@ -366,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         diskSubItem.title = "    \(fmtBytes(m.diskUsed)) / \(fmtBytes(m.diskTotal))"
 
         if let b = m.battery {
-            batItem.title = String(format: "배터리         %.1f%%%@", b, m.charging ? " ⚡" : "")
+            batItem.title = String(format: "배터리         %.0f%%%@", b, m.charging ? " ⚡" : "")
             batSourceItem.title = "    전원 공급원 \(m.onAC ? "전원 어댑터" : "배터리")"
             batHealthItem.title = m.batHealth.map { String(format: "    성능 최대치 %.1f%%", $0) } ?? "    성능 최대치 —"
             batCyclesItem.title = "    사이클 수   \(m.batCycles.map(String.init) ?? "—")"

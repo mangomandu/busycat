@@ -239,7 +239,10 @@ final class SystemSampler {
             let d = unmanaged?.takeRetainedValue() as? [String: Any]
         else { return (nil, false, false, nil, nil, nil) }
 
-        let rawCur = d["AppleRawCurrentCapacity"] as? Int
+        // Displayed charge % = the calibrated CurrentCapacity/MaxCapacity that the
+        // menu bar / System Settings / pmset show (NOT the raw mAh ratio).
+        let curCap = d["CurrentCapacity"] as? Int
+        let maxCap = d["MaxCapacity"] as? Int
         let rawMax = d["AppleRawMaxCapacity"] as? Int
         let design = d["DesignCapacity"] as? Int
         let onAC = (d["ExternalConnected"] as? Bool) ?? false
@@ -248,7 +251,8 @@ final class SystemSampler {
         let temp = (d["Temperature"] as? Int).map { Double($0) / 100 }
 
         var pct: Double? = nil
-        if let c = rawCur, let m = rawMax, m > 0 { pct = Double(c) / Double(m) * 100 }
+        if let c = curCap, let m = maxCap, m > 0 { pct = Double(c) / Double(m) * 100 }
+        // Battery health (= System Settings "Maximum Capacity"): raw max vs design.
         var health: Double? = nil
         if let m = rawMax, let dz = design, dz > 0 { health = min(100, Double(m) / Double(dz) * 100) }
         return (pct, charging, onAC, health, cycles, temp)
