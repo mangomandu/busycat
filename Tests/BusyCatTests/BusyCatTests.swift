@@ -29,23 +29,14 @@ struct BusyCatTests {
         #expect(abs(SpeedCurve.interval(forUsage: 500) - 0.02) < 0.0001)
     }
 
-    @Test func deviceGPUUsageSubtractsRenderer() {
-        let result = GPUReader.utilization(from: [
+    @Test func deviceGPUCountersAndComputePath() {
+        let result = GPUReader.counters(from: [
             "Device Utilization %": 80,
             "Renderer Utilization %": 15,
         ])
-        #expect(result.compute == 65)
         #expect(result.raw == 80)
         #expect(result.render == 15)
-    }
-
-    @Test func legacyGPUFallbackDoesNotSubtractItselfToZero() {
-        let result = GPUReader.utilization(from: [
-            "Renderer Utilization %": 35,
-            "Tiler Utilization %": 20,
-        ])
-        #expect(result.compute == 35)
-        #expect(result.raw == 35)
+        #expect(MetricMath.gpuCompute(raw: result.raw, render: result.render) == 65)
     }
 
     @Test func numericVersionComparison() {

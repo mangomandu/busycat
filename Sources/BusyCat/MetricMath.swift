@@ -30,6 +30,11 @@ enum MetricMath {
     static func counterDelta(current: UInt32, previous: UInt32) -> UInt64 {
         UInt64(current &- previous)
     }
+
+    /// Apple Silicon compute load after removing renderer/compositor activity.
+    static func gpuCompute(raw: Double, render: Double) -> Double {
+        max(0, raw - render)
+    }
 }
 
 enum SpeedCurve {
