@@ -26,6 +26,13 @@ enum Updater {
     static func interpretLatestRelease(
         statusCode: Int?, data: Data?, currentVersion: String
     ) -> CheckResult {
+        // GitHub returns 404 from /releases/latest when the repo simply has no
+        // published releases yet. That's a benign "nothing newer exists" state,
+        // not a failure — treat it as up to date so a manual check doesn't show a
+        // false "check your network" error, and so the auto-check keeps its 24h
+        // backoff instead of re-hitting the API on every launch.
+        if statusCode == 404 { return .upToDate }
+
         guard let statusCode, (200..<300).contains(statusCode), let data,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               var tag = obj["tag_name"] as? String
@@ -37,7 +44,8 @@ enum Updater {
     }
 
     /// Fetch the latest release tag and distinguish a successful no-update result
-    /// from network, HTTP, and response-decoding failures.
+    /// (including a repo with no releases yet, HTTP 404) from network, HTTP, and
+    /// response-decoding failures.
     static func check(completion: @escaping (CheckResult) -> Void) {
         let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
         var req = URLRequest(url: url, timeoutInterval: 10)

@@ -69,4 +69,16 @@ struct BusyCatTests {
         #expect(Updater.interpretLatestRelease(
             statusCode: 200, data: data, currentVersion: "1.1") == .updateAvailable("1.2"))
     }
+
+    /// A repo with no releases yet returns 404 from /releases/latest. That is a
+    /// benign "nothing newer" state, not a network failure — it must not surface
+    /// a false error to the user (regression guard).
+    @Test func updateResponseTreatsNoReleases404AsUpToDate() {
+        let body = Data(#"{"message":"Not Found","status":"404"}"#.utf8)
+        #expect(Updater.interpretLatestRelease(
+            statusCode: 404, data: body, currentVersion: "1.0") == .upToDate)
+        // 404 wins even with no body at all.
+        #expect(Updater.interpretLatestRelease(
+            statusCode: 404, data: nil, currentVersion: "1.0") == .upToDate)
+    }
 }
