@@ -16,7 +16,7 @@ struct Metrics {
     // Memory (Activity Monitor "Memory Used" = App + Wired + Compressed)
     var memory: Double = 0       // % used
     var memPressure: Double = 0  // % = (wired + compressed) / total
-    var memApp: Double = 0       // bytes (anonymous − purgeable)
+    var memApp: Double = 0       // bytes (internal/anonymous, purgeable included)
     var memWired: Double = 0     // bytes
     var memCompressed: Double = 0 // bytes
     // Disk (root volume, Finder convention: purgeable counts as free)
@@ -102,7 +102,7 @@ final class SystemSampler {
         m.gpuRender = gpuRenderEMA
         // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
         // so ticks where integer render momentarily ≥ raw don't bias the cat low.
-        m.gpu = max(0, gpuRawEMA - gpuRenderEMA)
+        m.gpu = MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
         let mem = memory()
         m.memory = mem.percent
         m.memPressure = mem.pressure
@@ -192,8 +192,8 @@ final class SystemSampler {
         return (min(100, sysEMA + userEMA), sysEMA, userEMA)
     }
 
-    // MARK: Memory — Activity Monitor's model: Used = App + Wired + Compressed,
-    // where App Memory = (anonymous − purgeable). Pressure = (wired+compressed)/total.
+    // MARK: Memory — Activity Monitor-like model: Used = App + Wired + Compressed.
+    // App Memory uses internal/anonymous pages, including purgeable pages.
 
     private func memory() -> (percent: Double, pressure: Double, app: Double, wired: Double, compressed: Double) {
         var stats = vm_statistics64()
@@ -360,8 +360,8 @@ final class SystemSampler {
 }
 
 /// Reads GPU utilization from the IOKit registry (no sudo needed on Apple
-/// Silicon). The supported Apple Silicon path has one AGX accelerator; older
-/// GPUs use their best available activity counter as a fallback.
+/// Silicon). The supported path has one AGX accelerator and exposes Device and
+/// Renderer utilization counters.
 ///
 /// Metric choice matters — and is easy to get backwards:
 ///   - "Device Utilization %" = overall GPU busy, **including Metal compute (MPS)**.
@@ -372,35 +372,32 @@ final class SystemSampler {
 ///     pipeline (raster / geometry). During pure compute they read near 0 — so
 ///     relying on them makes the cat look idle during exactly the GPU work we care
 ///     about. (That mistake is why this once read low during embeddings.)
-/// On older / third-party GPUs without Device Utilization, we fall back to GPU
-/// Activity or the busiest renderer/tiler pipeline without subtracting it again.
+/// Older / third-party counters are retained as best-effort display fallbacks,
+/// but compute isolation is only guaranteed on the Apple Silicon Device path.
 enum GPUReader {
     // The accelerator service is matched once and cached: re-matching every second
     // is wasteful. We also read only the "PerformanceStatistics" property instead
     // of copying the accelerator's entire (large) property set each tick.
     private static var cachedService: io_object_t = 0
 
-    static func usage() -> Double { stats().compute }
-
     /// Returns the GPU breakdown in one registry read:
     ///   - raw:     "Device Utilization %" (total busy, incl. compositing) — matches AM
     ///   - render:  "Renderer Utilization %" (screen compositing / graphics)
-    ///   - compute: raw minus the graphics/compositing part (drives the cat)
     ///
     /// Key observation: screen compositing drives Device and Renderer together
     /// (Device ≈ Renderer), while Metal compute (embeddings) drives Device far
     /// above Renderer. So `Device − Renderer` isolates real compute — a brief
     /// menu/Mission-Control composite ≈ 0, an embedding stays high — far better
     /// than a fixed baseline that big menu renders could exceed.
-    static func stats() -> (compute: Double, raw: Double, render: Double) {
+    static func stats() -> (raw: Double, render: Double) {
         if cachedService == 0 { cachedService = findAccelerator() }
-        guard cachedService != 0 else { return (0, 0, 0) }
+        guard cachedService != 0 else { return (0, 0) }
         guard let perf = perfStats(cachedService) else {
             IOObjectRelease(cachedService)  // service vanished — re-match next time
             cachedService = 0
-            return (0, 0, 0)
+            return (0, 0)
         }
-        return utilization(from: perf)
+        return counters(from: perf)
     }
 
     /// First IOAccelerator that exposes PerformanceStatistics (one AGX GPU on
@@ -432,8 +429,8 @@ enum GPUReader {
         return cf.takeRetainedValue() as? [String: Any]
     }
 
-    static func utilization(from perf: [String: Any])
-        -> (compute: Double, raw: Double, render: Double) {
+    static func counters(from perf: [String: Any])
+        -> (raw: Double, render: Double) {
         func percent(_ key: String) -> Double? {
             guard let value = perf[key] as? NSNumber else { return nil }
             return max(0, min(100, value.doubleValue))
@@ -445,16 +442,15 @@ enum GPUReader {
         // ~10-15% just from normal menu-bar compositing (including our own cat),
         // which would keep the cat sprinting at idle and waste CPU.
         if let raw = percent("Device Utilization %") {
-            return (max(0, raw - render), raw, render)
+            return (raw, render)
         }
 
-        // Older/third-party GPUs do not expose enough information to subtract
-        // compositing reliably. Use their best available activity signal directly
-        // so the GPU speed driver still responds instead of collapsing to zero.
+        // Best-effort display fallback only. These GPUs do not expose enough
+        // information to guarantee Device−Renderer compute isolation.
         if let activity = percent("GPU Activity(%)") {
-            return (activity, activity, render)
+            return (activity, render)
         }
         let pipeline = max(render, percent("Tiler Utilization %") ?? 0)
-        return (pipeline, pipeline, render)
+        return (pipeline, render)
     }
 }
