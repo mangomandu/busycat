@@ -37,10 +37,17 @@ if CommandLine.arguments.contains("--statsdump") {
     m.netType = "Wi-Fi"; m.localIP = "192.168.0.2"; m.netUp = 819; m.netDown = 409
     let v = StatsView()
     v.update(m, history: (0..<60).map { 20 + 18 * sin(Double($0) / 4) })
+    // Render under dark appearance so the view's dynamic colors (labelColor,
+    // secondaryLabelColor, tinted icons) resolve to their light-on-dark variants
+    // — otherwise dark text on the dark menu bg comes out as unreadable gray.
+    let dark = NSAppearance(named: .darkAqua)!
+    v.appearance = dark
     let size = v.frame.size
     let img = NSImage(size: size, flipped: true) { rect in
-        NSColor(white: 0.20, alpha: 1).setFill(); rect.fill()
-        v.draw(rect)
+        dark.performAsCurrentDrawingAppearance {
+            NSColor(white: 0.15, alpha: 1).setFill(); rect.fill()
+            v.draw(rect)
+        }
         return true
     }
     if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
