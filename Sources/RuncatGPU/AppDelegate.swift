@@ -324,10 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// RunCat's exact mapping: 5 fps up to ~5% load (choppy idle like RunCat),
-    /// then linear up to 100 fps at full load.
+    /// Frame interval from load. Half of RunCat's rate (0.4 vs 0.2 base) for a
+    /// calmer cat: ~2.5 fps idle … ~50 fps at full load.
     private func interval(forUsage usage: Double) -> TimeInterval {
-        return 0.2 / max(1.0, min(20.0, usage / 5.0))
+        return 0.4 / max(1.0, min(20.0, usage / 5.0))
     }
 
     private func startAnimation(interval: TimeInterval) {

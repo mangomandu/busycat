@@ -62,6 +62,13 @@ final class SystemSampler {
     private var downEMA = 0.0
     private var upEMA = 0.0
     private var netEMAPrimed = false
+    // GPU EMA (raw display + compute that drives the cat). Smoothed so brief
+    // compositing spikes don't sprint the cat; embeddings are sustained so the
+    // ~5s ramp still catches them.
+    private var gpuRawEMA = 0.0
+    private var gpuRenderEMA = 0.0
+    private var gpuComputeEMA = 0.0
+    private var gpuEMAPrimed = false
 
     /// Cheap metrics needed every second to drive the cat (CPU/GPU/memory are all
     /// single fast kernel calls). Used while the menu is closed — i.e. ~always.
@@ -72,9 +79,19 @@ final class SystemSampler {
         m.cpuSystem = c.system
         m.cpuUser = c.user
         let g = GPUReader.stats()
-        m.gpu = g.compute
-        m.gpuRaw = g.raw
-        m.gpuRender = g.render
+        if gpuEMAPrimed {
+            gpuComputeEMA = gpuComputeEMA * emaAlpha + g.compute * (1 - emaAlpha)
+            gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
+            gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
+        } else {
+            gpuComputeEMA = g.compute
+            gpuRawEMA = g.raw
+            gpuRenderEMA = g.render
+            gpuEMAPrimed = true
+        }
+        m.gpu = gpuComputeEMA
+        m.gpuRaw = gpuRawEMA
+        m.gpuRender = gpuRenderEMA
         let mem = memory()
         m.memory = mem.percent
         m.memPressure = mem.pressure
@@ -334,19 +351,18 @@ enum GPUReader {
     // of copying the accelerator's entire (large) property set each tick.
     private static var cachedService: io_object_t = 0
 
-    /// Apple's "Device Utilization %" is device-wide: it rises ~20-30% just from
-    /// WindowServer compositing the screen (wallpaper, window movement, even our
-    /// own cat) — not "GPU work" in the sense we care about. Subtract that
-    /// baseline and rescale so casual screen activity reads ~0 while real compute
-    /// (embeddings) still reaches ~100. Tune `compositingFloor` to taste.
-    static let compositingFloor = 30.0
-
     static func usage() -> Double { stats().compute }
 
     /// Returns the GPU breakdown in one registry read:
-    ///   - raw:     "Device Utilization %" (total busy, incl. compositing)
+    ///   - raw:     "Device Utilization %" (total busy, incl. compositing) — matches AM
     ///   - render:  "Renderer Utilization %" (screen compositing / graphics)
-    ///   - compute: raw with the compositing baseline removed (drives the cat)
+    ///   - compute: raw minus the graphics/compositing part (drives the cat)
+    ///
+    /// Key observation: screen compositing drives Device and Renderer together
+    /// (Device ≈ Renderer), while Metal compute (embeddings) drives Device far
+    /// above Renderer. So `Device − Renderer` isolates real compute — a brief
+    /// menu/Mission-Control composite ≈ 0, an embedding stays high — far better
+    /// than a fixed baseline that big menu renders could exceed.
     static func stats() -> (compute: Double, raw: Double, render: Double) {
         if cachedService == 0 { cachedService = findAccelerator() }
         guard cachedService != 0 else { return (0, 0, 0) }
@@ -357,7 +373,7 @@ enum GPUReader {
         }
         let raw = min(100, deviceUsage(perf))
         let render = min(100, Double(perf["Renderer Utilization %"] as? Int ?? 0))
-        let compute = max(0, (raw - compositingFloor) / (100 - compositingFloor) * 100)
+        let compute = max(0, raw - render)
         return (compute, raw, render)
     }
 
