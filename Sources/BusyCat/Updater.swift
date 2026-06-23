@@ -4,6 +4,12 @@ import Foundation
 /// compare it to the running version. No signing, no Sparkle framework — just a
 /// hint in the menu. Distribution stays manual (`git pull && make_app.sh`).
 enum Updater {
+    enum CheckResult: Equatable {
+        case updateAvailable(String)
+        case upToDate
+        case failed
+    }
+
     static let repo = "mangomandu/busycat"
     static let releasesPage = URL(string: "https://github.com/\(repo)/releases/latest")!
 
@@ -17,22 +23,32 @@ enum Updater {
         a.compare(b, options: .numeric) == .orderedDescending
     }
 
-    /// Fetch the latest release tag; call back on the main queue with the newer
-    /// version string (e.g. "1.1") if it beats what's running, else nil. Silent
-    /// on any error or when the repo has no releases yet (API 404).
-    static func check(completion: @escaping (String?) -> Void) {
+    static func interpretLatestRelease(
+        statusCode: Int?, data: Data?, currentVersion: String
+    ) -> CheckResult {
+        guard let statusCode, (200..<300).contains(statusCode), let data,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var tag = obj["tag_name"] as? String
+        else { return .failed }
+
+        if tag.first?.lowercased() == "v" { tag.removeFirst() }
+        guard !tag.isEmpty else { return .failed }
+        return isNewer(tag, than: currentVersion) ? .updateAvailable(tag) : .upToDate
+    }
+
+    /// Fetch the latest release tag and distinguish a successful no-update result
+    /// from network, HTTP, and response-decoding failures.
+    static func check(completion: @escaping (CheckResult) -> Void) {
         let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
         var req = URLRequest(url: url, timeoutInterval: 10)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            var newer: String?
-            if let data,
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               var tag = obj["tag_name"] as? String {
-                if tag.hasPrefix("v") { tag.removeFirst() }
-                if isNewer(tag, than: currentVersion) { newer = tag }
-            }
-            DispatchQueue.main.async { completion(newer) }
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            let statusCode = (response as? HTTPURLResponse)?.statusCode
+            let result = error == nil
+                ? interpretLatestRelease(statusCode: statusCode, data: data,
+                                         currentVersion: currentVersion)
+                : .failed
+            DispatchQueue.main.async { completion(result) }
         }.resume()
     }
 }

@@ -10,7 +10,7 @@
  (자동/흰색/검정): 자동 follows the system Dark/Light mode, and the manual
  choices are a bulletproof escape when 자동 guesses wrong.
 
- Speed = RunCat's exact curve; CPU% matches RunCat's formula (UsageReader).
+ Speed follows RunCat's curve at half the frame rate; CPU% uses the same model.
  Heavy metrics (disk/net/battery) are sampled only while the menu is open.
 */
 
@@ -153,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         spriteLayer.contentsGravity = .resizeAspect
         spriteLayer.contentsScale = scale
+        // Sprite frames must switch immediately. Prevent Core Animation from
+        // creating an implicit contents animation for every timer tick.
+        spriteLayer.actions = ["contents": NSNull()]
         textLayer.contentsScale = scale
         textLayer.font = font
         textLayer.fontSize = font.pointSize
@@ -311,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !asleep else { return }
         var usage = driver.value(latest)
         if invert { usage = 100 - usage }
-        let target = interval(forUsage: usage)
+        let target = SpeedCurve.interval(forUsage: usage)
         // Relative threshold: only rebuild the timer when the rate changes
         // meaningfully (>10%), so tiny EMA jitter doesn't recreate it every tick.
         // A 49.5↔50 fps difference is invisible; the churn isn't free.
@@ -319,12 +322,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentInterval = target
             startAnimation(interval: target)
         }
-    }
-
-    /// Frame interval from load. Half of RunCat's rate (0.4 vs 0.2 base) for a
-    /// calmer cat: ~2.5 fps idle … ~50 fps at full load.
-    private func interval(forUsage usage: Double) -> TimeInterval {
-        return 0.4 / max(1.0, min(20.0, usage / 5.0))
     }
 
     private func startAnimation(interval: TimeInterval) {
@@ -402,18 +399,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateItem.title = "업데이트 확인 중…"
         updateItem.action = nil
-        Updater.check { [weak self] newer in
+        Updater.check { [weak self] result in
             guard let self else { return }
-            if let v = newer {
+            switch result {
+            case .updateAvailable(let v):
                 self.setUpdateAvailable(v)
                 NSWorkspace.shared.open(Updater.releasesPage)
-            } else {
+            case .upToDate:
                 self.updateItem.title = "업데이트 확인"
                 self.updateItem.action = #selector(self.updateItemClicked)
                 NSApp.activate(ignoringOtherApps: true)
                 let a = NSAlert()
                 a.messageText = "최신 버전입니다"
                 a.informativeText = "현재 v\(Updater.currentVersion)이 최신입니다."
+                a.runModal()
+            case .failed:
+                self.updateItem.title = "업데이트 확인"
+                self.updateItem.action = #selector(self.updateItemClicked)
+                NSApp.activate(ignoringOtherApps: true)
+                let a = NSAlert()
+                a.alertStyle = .warning
+                a.messageText = "업데이트를 확인할 수 없습니다"
+                a.informativeText = "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
                 a.runModal()
             }
         }
@@ -431,9 +438,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let key = "lastUpdateCheck"
         let now = Date().timeIntervalSince1970
         guard now - defaults.double(forKey: key) > 24 * 3600 else { return }
-        defaults.set(now, forKey: key)
-        Updater.check { [weak self] newer in
-            if let v = newer { self?.setUpdateAvailable(v) }
+        Updater.check { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .updateAvailable(let v):
+                self.defaults.set(now, forKey: key)
+                self.setUpdateAvailable(v)
+            case .upToDate:
+                self.defaults.set(now, forKey: key)
+            case .failed:
+                break // retry on the next launch instead of suppressing for 24h
+            }
         }
     }
 

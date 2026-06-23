@@ -50,10 +50,10 @@ final class SystemSampler {
     // Cache the host port once; mach_host_self() returns a send right the caller
     // must balance, so calling it every sample would slowly leak port references.
     private let host = mach_host_self()
-    private var prevUser: UInt64 = 0
-    private var prevSystem: UInt64 = 0
-    private var prevNice: UInt64 = 0
-    private var prevTotalTicks: UInt64 = 0
+    private var prevUser: UInt32 = 0
+    private var prevSystem: UInt32 = 0
+    private var prevIdle: UInt32 = 0
+    private var prevNice: UInt32 = 0
     private var cpuPrimed = false
     private var sysEMA = 0.0
     private var userEMA = 0.0
@@ -158,20 +158,26 @@ final class SystemSampler {
         }
         guard result == KERN_SUCCESS else { return (0, 0, 0) }
 
-        let user = UInt64(info.cpu_ticks.0)     // USER
-        let system = UInt64(info.cpu_ticks.1)   // SYSTEM
-        let idle = UInt64(info.cpu_ticks.2)     // IDLE
-        let nice = UInt64(info.cpu_ticks.3)     // NICE
+        let user = info.cpu_ticks.0     // USER
+        let system = info.cpu_ticks.1   // SYSTEM
+        let idle = info.cpu_ticks.2     // IDLE
+        let nice = info.cpu_ticks.3     // NICE
         // Normalized usage like Activity Monitor: user (incl. nice) and system as a
         // fraction of total, so system + user + idle == 100 exactly and the panel's
         // breakdown stays internally consistent. Each smoothed with its own EMA.
-        let totalTicks = user &+ system &+ idle &+ nice
-
-        defer { prevUser = user; prevSystem = system; prevNice = nice; prevTotalTicks = totalTicks; cpuPrimed = true }
+        defer {
+            prevUser = user
+            prevSystem = system
+            prevIdle = idle
+            prevNice = nice
+            cpuPrimed = true
+        }
         guard cpuPrimed else { return (0, 0, 0) }
-        let dUser = Double((user &- prevUser) &+ (nice &- prevNice))  // nice counts as user
-        let dSys = Double(system &- prevSystem)
-        let dTotal = Double(totalTicks &- prevTotalTicks)
+        let dUser = Double(MetricMath.counterDelta(current: user, previous: prevUser)
+            + MetricMath.counterDelta(current: nice, previous: prevNice))
+        let dSys = Double(MetricMath.counterDelta(current: system, previous: prevSystem))
+        let dIdle = Double(MetricMath.counterDelta(current: idle, previous: prevIdle))
+        let dTotal = dUser + dSys + dIdle
         guard dTotal > 0 else { return (min(100, sysEMA + userEMA), sysEMA, userEMA) }
         let instSys = dSys / dTotal * 100
         let instUser = dUser / dTotal * 100
@@ -221,13 +227,14 @@ final class SystemSampler {
     private func disk() -> (percent: Double, used: Double, total: Double) {
         let url = URL(fileURLWithPath: "/")
         guard let v = try? url.resourceValues(
-            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
-            let total = v.volumeTotalCapacity,
-            let avail = v.volumeAvailableCapacityForImportantUsage, total > 0
+            forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey,
+                      .volumeAvailableCapacityForImportantUsageKey]),
+            let total = v.volumeTotalCapacity, total > 0
         else { return (0, 0, 0) }
-        // available-for-important-usage can exceed total (counts purgeable), so clamp.
-        let used = max(0, Double(total) - Double(avail))
-        return (min(100, used / Double(total) * 100), used, Double(total))
+        return MetricMath.diskUsage(
+            total: Int64(total),
+            importantAvailable: v.volumeAvailableCapacityForImportantUsage,
+            regularAvailable: v.volumeAvailableCapacity.map(Int64.init))
     }
 
     // MARK: Network — bytes/s up & down across physical interfaces
@@ -353,7 +360,8 @@ final class SystemSampler {
 }
 
 /// Reads GPU utilization from the IOKit registry (no sudo needed on Apple
-/// Silicon). Returns the highest busy% across all accelerators.
+/// Silicon). The supported Apple Silicon path has one AGX accelerator; older
+/// GPUs use their best available activity counter as a fallback.
 ///
 /// Metric choice matters — and is easy to get backwards:
 ///   - "Device Utilization %" = overall GPU busy, **including Metal compute (MPS)**.
@@ -364,8 +372,8 @@ final class SystemSampler {
 ///     pipeline (raster / geometry). During pure compute they read near 0 — so
 ///     relying on them makes the cat look idle during exactly the GPU work we care
 ///     about. (That mistake is why this once read low during embeddings.)
-/// We take the max of all three so both compute and graphics load register, and
-/// fall back to "GPU Activity(%)" on older / third-party GPUs.
+/// On older / third-party GPUs without Device Utilization, we fall back to GPU
+/// Activity or the busiest renderer/tiler pipeline without subtracting it again.
 enum GPUReader {
     // The accelerator service is matched once and cached: re-matching every second
     // is wasteful. We also read only the "PerformanceStatistics" property instead
@@ -392,10 +400,7 @@ enum GPUReader {
             cachedService = 0
             return (0, 0, 0)
         }
-        let raw = min(100, deviceUsage(perf))
-        let render = min(100, Double(perf["Renderer Utilization %"] as? Int ?? 0))
-        let compute = max(0, raw - render)
-        return (compute, raw, render)
+        return utilization(from: perf)
     }
 
     /// First IOAccelerator that exposes PerformanceStatistics (one AGX GPU on
@@ -427,23 +432,29 @@ enum GPUReader {
         return cf.takeRetainedValue() as? [String: Any]
     }
 
-    private static func deviceUsage(_ perf: [String: Any]) -> Double {
+    static func utilization(from perf: [String: Any])
+        -> (compute: Double, raw: Double, render: Double) {
+        func percent(_ key: String) -> Double? {
+            guard let value = perf[key] as? NSNumber else { return nil }
+            return max(0, min(100, value.doubleValue))
+        }
+
+        let render = percent("Renderer Utilization %") ?? 0
         // "Device Utilization %" is the right signal: 0 at idle, ~100 under Metal
         // compute (embeddings). Do NOT fold in "Renderer"/"Tiler" — those read
         // ~10-15% just from normal menu-bar compositing (including our own cat),
         // which would keep the cat sprinting at idle and waste CPU.
-        if let device = perf["Device Utilization %"] as? Int { return Double(device) }
-        // Fallback for GPUs lacking that key (older / third-party).
-        var best = 0.0
-        var found = false
-        for key in ["Renderer Utilization %", "Tiler Utilization %"] {
-            if let v = perf[key] as? Int {
-                best = max(best, Double(v))
-                found = true
-            }
+        if let raw = percent("Device Utilization %") {
+            return (max(0, raw - render), raw, render)
         }
-        if found { return best }
-        if let activity = perf["GPU Activity(%)"] as? Int { return Double(activity) }
-        return 0
+
+        // Older/third-party GPUs do not expose enough information to subtract
+        // compositing reliably. Use their best available activity signal directly
+        // so the GPU speed driver still responds instead of collapsing to zero.
+        if let activity = percent("GPU Activity(%)") {
+            return (activity, activity, render)
+        }
+        let pipeline = max(render, percent("Tiler Utilization %") ?? 0)
+        return (pipeline, pipeline, render)
     }
 }
