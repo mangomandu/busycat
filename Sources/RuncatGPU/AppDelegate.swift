@@ -94,15 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { defaults.set(newValue, forKey: "flip") }
     }
 
-    private static func info() -> NSMenuItem { NSMenuItem(title: "", action: nil, keyEquivalent: "") }
-    private let cpuItem = info(), cpuSysItem = info(), cpuUserItem = info(), cpuIdleItem = info()
-    private let gpuItem = info(), gpuRawItem = info(), gpuRenderItem = info()
-    private let memItem = info(), memPressItem = info(), memAppItem = info(),
-                memWiredItem = info(), memCompItem = info()
-    private let diskItem = info(), diskSubItem = info()
-    private let batItem = info(), batSourceItem = info(), batHealthItem = info(),
-                batCyclesItem = info(), batTempItem = info()
-    private let netItem = info(), netIPItem = info(), netUpItem = info(), netDownItem = info()
+    private let statsView = StatsView()
+    private var cpuHistory: [Double] = []
     private var driverItems: [NSMenuItem] = []
     private var catColorItems: [NSMenuItem] = []
     private var showTextItem: NSMenuItem!
@@ -233,18 +226,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Menu
 
     private func buildMenu() {
-        let groups: [[NSMenuItem]] = [
-            [cpuItem, cpuSysItem, cpuUserItem, cpuIdleItem],
-            [gpuItem, gpuRawItem, gpuRenderItem],
-            [memItem, memPressItem, memAppItem, memWiredItem, memCompItem],
-            [diskItem, diskSubItem],
-            [batItem, batSourceItem, batHealthItem, batCyclesItem, batTempItem],
-            [netItem, netIPItem, netUpItem, netDownItem],
-        ]
-        for group in groups {
-            for item in group { item.isEnabled = false; menu.addItem(item) }
-            menu.addItem(.separator())
-        }
+        let statsItem = NSMenuItem()
+        statsItem.view = statsView
+        menu.addItem(statsItem)
+        menu.addItem(.separator())
 
         let driverParent = NSMenuItem(title: "속도 기준", action: nil, keyEquivalent: "")
         let driverMenu = NSMenu()
@@ -301,14 +286,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func tick() {
         if menuOpen {
-            latest = sampler.sampleAll()
-            refreshMenuTitles()
+            latest = sampler.sampleAll()   // full detail while the panel is visible
         } else {
             let light = sampler.sampleLight()
             latest.cpu = light.cpu
             latest.gpu = light.gpu
             latest.memory = light.memory
         }
+        cpuHistory.append(latest.cpu)
+        if cpuHistory.count > 60 { cpuHistory.removeFirst() }
+        if menuOpen { statsView.update(latest, history: cpuHistory) }
         if catColor == .auto, wantWhite() != lastTintWhite { rebuildArtwork() }
         if showText { layout() }
 
@@ -343,55 +330,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !tintedFrames.isEmpty else { return }
         index = (index + 1) % tintedFrames.count
         spriteLayer.contents = tintedFrames[index]
-    }
-
-    private func refreshMenuTitles() {
-        let m = latest
-        cpuItem.title = String(format: "CPU            %.1f%%", m.cpu)
-        cpuSysItem.title = String(format: "    시스템     %.1f%%", m.cpuSystem)
-        cpuUserItem.title = String(format: "    사용자     %.1f%%", m.cpuUser)
-        cpuIdleItem.title = String(format: "    대기       %.1f%%", max(0, 100 - m.cpu))
-
-        gpuItem.title = String(format: "GPU            %.0f%%", m.gpuRaw)
-        gpuRawItem.title = String(format: "    렌더(합성)   %.0f%%", m.gpuRender)
-        gpuRenderItem.title = String(format: "    연산(고양이) %.1f%%", m.gpu)
-
-        memItem.title = String(format: "메모리         %.1f%%", m.memory)
-        memPressItem.title = String(format: "    압력       %.1f%%", m.memPressure)
-        memAppItem.title = "    앱 메모리   \(fmtBytes(m.memApp))"
-        memWiredItem.title = "    와이어드   \(fmtBytes(m.memWired))"
-        memCompItem.title = "    압축됨     \(fmtBytes(m.memCompressed))"
-
-        diskItem.title = String(format: "저장 용량      %.1f%% 사용됨", m.disk)
-        diskSubItem.title = "    \(fmtBytes(m.diskUsed)) / \(fmtBytes(m.diskTotal))"
-
-        if let b = m.battery {
-            batItem.title = String(format: "배터리         %.0f%%%@", b, m.charging ? " ⚡" : "")
-            batSourceItem.title = "    전원 공급원 \(m.onAC ? "전원 어댑터" : "배터리")"
-            batHealthItem.title = m.batHealth.map { String(format: "    성능 최대치 %.1f%%", $0) } ?? "    성능 최대치 —"
-            batCyclesItem.title = "    사이클 수   \(m.batCycles.map(String.init) ?? "—")"
-            batTempItem.title = m.batTemp.map { String(format: "    온도        %.1f°C", $0) } ?? "    온도        —"
-        } else {
-            batItem.title = "배터리         —"
-            for it in [batSourceItem, batHealthItem, batCyclesItem, batTempItem] { it.title = "" ; it.isHidden = true }
-        }
-
-        netItem.title = "네트워크       \(m.netType)"
-        netIPItem.title = "    로컬 IP     \(m.localIP)"
-        netUpItem.title = "    업로드      \(rate(m.netUp))"
-        netDownItem.title = "    다운로드    \(rate(m.netDown))"
-    }
-
-    private func fmtBytes(_ b: Double) -> String {
-        if b >= 1_000_000_000 { return String(format: "%.1f GB", b / 1_000_000_000) }
-        if b >= 1_000_000 { return String(format: "%.0f MB", b / 1_000_000) }
-        return String(format: "%.0f KB", b / 1_000)
-    }
-
-    private func rate(_ bps: Double) -> String {
-        if bps >= 1_000_000 { return String(format: "%.1f MB/s", bps / 1_000_000) }
-        if bps >= 1_000 { return String(format: "%.1f kB/s", bps / 1_000) }
-        return String(format: "%.0f B/s", bps)
     }
 
     // MARK: Actions
