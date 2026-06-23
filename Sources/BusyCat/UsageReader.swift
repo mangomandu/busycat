@@ -312,7 +312,7 @@ final class SystemSampler {
 
     private func networkInfo() -> (type: String, ip: String) {
         var bsd: String?
-        if let store = SCDynamicStoreCreate(nil, "RuncatGPU" as CFString, nil, nil),
+        if let store = SCDynamicStoreCreate(nil, "BusyCat" as CFString, nil, nil),
             let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString)
                 as? [String: Any] {
             bsd = dict["PrimaryInterface"] as? String

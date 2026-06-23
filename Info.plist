@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>RuncatGPU</string>
+    <string>BusyCat</string>
     <key>CFBundleDisplayName</key>
-    <string>RuncatGPU</string>
+    <string>BusyCat</string>
     <key>CFBundleIdentifier</key>
-    <string>com.dlfnek.runcatgpu</string>
+    <string>com.dlfnek.busycat</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -15,7 +15,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>RuncatGPU</string>
+    <string>BusyCat</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>

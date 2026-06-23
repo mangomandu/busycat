@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "RuncatGPU",
+    name: "BusyCat",
     platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(
-            name: "RuncatGPU",
-            path: "Sources/RuncatGPU"
+            name: "BusyCat",
+            path: "Sources/BusyCat"
         )
     ]
 )

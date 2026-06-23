@@ -1,5 +1,5 @@
 /*
- AppDelegate.swift — full RuncatGPU on the light CALayer renderer.
+ AppDelegate.swift — full BusyCat on the light CALayer renderer.
 
  Rendering: cat in a CALayer; the runner timer swaps spriteLayer.contents (no
  button.image → no macOS 26 menu-bar background recomposite → ~0.3% CPU).
@@ -109,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // we never end up with a row of cats.
         let me = NSRunningApplication.current
         let dupes = NSRunningApplication.runningApplications(
-            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "com.dlfnek.runcatgpu")
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "com.dlfnek.busycat")
             .filter { $0.processIdentifier != me.processIdentifier }
         if !dupes.isEmpty { NSApp.terminate(nil); return }
 
@@ -270,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   action: #selector(openActivityMonitor), keyEquivalent: "")
         activity.target = self
         menu.addItem(activity)
-        let quit = NSMenuItem(title: "RuncatGPU 종료", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "BusyCat 종료", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         menu.delegate = self
@@ -394,7 +394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 if on { try SMAppService.mainApp.register() }
                 else { try SMAppService.mainApp.unregister() }
-            } catch { NSLog("RuncatGPU login item error: \(error)") }
+            } catch { NSLog("BusyCat login item error: \(error)") }
         }
     }
 

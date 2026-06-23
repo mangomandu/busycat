@@ -1,6 +1,6 @@
 import Cocoa
 
-// Debug: `RuncatGPU --metrics` prints one sample (after a 1s priming gap) and
+// Debug: `BusyCat --metrics` prints one sample (after a 1s priming gap) and
 // exits, without launching the menu bar app.
 if CommandLine.arguments.contains("--metrics") {
     let s = SystemSampler()

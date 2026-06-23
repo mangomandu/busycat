@@ -1,4 +1,4 @@
 .build/
-RuncatGPU.app/
+BusyCat.app/
 *.swiftpm
 .DS_Store

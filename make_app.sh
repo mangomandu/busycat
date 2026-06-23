@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Builds RuncatGPU.app — a self-contained menu bar app (no Dock icon).
+# Builds BusyCat.app — a self-contained menu bar app (no Dock icon).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 swift build -c release
 
-APP="RuncatGPU.app"
+APP="BusyCat.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp ".build/release/RuncatGPU" "$APP/Contents/MacOS/RuncatGPU"
+cp ".build/release/BusyCat" "$APP/Contents/MacOS/BusyCat"
 cp "Info.plist" "$APP/Contents/Info.plist"
 
 # Ad-hoc sign so macOS is happy launching it locally.
