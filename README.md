@@ -36,6 +36,15 @@ App Store, so it can read the GPU via IOKit without `sudo`.
 
 <p align="center"><img src="docs/panel.png" width="300" alt="BusyCat detailed stats panel"></p>
 
+## 🧪 Experimental: multi-cat mode
+
+A multi-cat mode is prototyped and working — a separate **CPU cat** and **GPU cat**
+(each spinning at its own load) plus a small **RAM "fish pile"** gauge. Public
+release of this mode is on hold pending artwork licensing: the prototype used a
+popular meme-cat sprite, so the distributed build ships only with the licensed
+running-cat art for now. If you're the rights holder and object, open an issue and
+it'll be removed.
+
 ## Build & install
 
 Requires the macOS Swift toolchain (Xcode Command Line Tools). No other
