@@ -49,8 +49,10 @@ Quit from the cat's menu → **바쁘냥 종료** (⌘Q). To launch at login, ad
 
 ## Updating
 
-There is **no auto-update** — it's an ad-hoc-signed app, not from the App Store.
-To update, pull and rebuild:
+BusyCat checks GitHub Releases once a day; when a newer version is published it
+shows **🆕 새 버전 받기** in its menu (or click **업데이트 확인** any time). It only
+*notifies* — there's no Sparkle/auto-install (it's an ad-hoc-signed app) — so you
+update by pulling and rebuilding:
 
 ```bash
 git pull

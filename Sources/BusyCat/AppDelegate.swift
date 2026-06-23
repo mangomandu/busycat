@@ -102,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var invertItem: NSMenuItem!
     private var flipItem: NSMenuItem!
     private var loginItem: NSMenuItem!
+    private var updateItem: NSMenuItem!
+    private var availableUpdate: String?
     private let menu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -127,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(timer, forMode: .common)
         sampleTimer = timer
         tick()
+        maybeAutoCheckUpdate()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -270,6 +273,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   action: #selector(openActivityMonitor), keyEquivalent: "")
         activity.target = self
         menu.addItem(activity)
+        updateItem = NSMenuItem(title: "업데이트 확인",
+                                action: #selector(updateItemClicked), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
         let quit = NSMenuItem(title: "바쁘냥 종료", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -383,6 +390,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    // MARK: Update check
+
+    /// Click the update menu item: open the download page if an update is known,
+    /// otherwise run a manual check and report the result.
+    @objc private func updateItemClicked() {
+        if availableUpdate != nil {
+            NSWorkspace.shared.open(Updater.releasesPage)
+            return
+        }
+        updateItem.title = "업데이트 확인 중…"
+        updateItem.action = nil
+        Updater.check { [weak self] newer in
+            guard let self else { return }
+            if let v = newer {
+                self.setUpdateAvailable(v)
+                NSWorkspace.shared.open(Updater.releasesPage)
+            } else {
+                self.updateItem.title = "업데이트 확인"
+                self.updateItem.action = #selector(self.updateItemClicked)
+                NSApp.activate(ignoringOtherApps: true)
+                let a = NSAlert()
+                a.messageText = "최신 버전입니다"
+                a.informativeText = "현재 v\(Updater.currentVersion)이 최신입니다."
+                a.runModal()
+            }
+        }
+    }
+
+    private func setUpdateAvailable(_ v: String) {
+        availableUpdate = v
+        updateItem.title = "🆕 새 버전 v\(v) 받기"
+        updateItem.action = #selector(updateItemClicked)
+        updateItem.target = self
+    }
+
+    /// Quiet background check, at most once per day.
+    private func maybeAutoCheckUpdate() {
+        let key = "lastUpdateCheck"
+        let now = Date().timeIntervalSince1970
+        guard now - defaults.double(forKey: key) > 24 * 3600 else { return }
+        defaults.set(now, forKey: key)
+        Updater.check { [weak self] newer in
+            if let v = newer { self?.setUpdateAvailable(v) }
+        }
+    }
 
     private func isLoginEnabled() -> Bool {
         if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .enabled }
