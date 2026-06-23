@@ -270,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   action: #selector(openActivityMonitor), keyEquivalent: "")
         activity.target = self
         menu.addItem(activity)
-        let quit = NSMenuItem(title: "BusyCat 종료", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "바쁘냥 종료", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         menu.delegate = self
