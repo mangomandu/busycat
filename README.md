@@ -1,4 +1,6 @@
-# BusyCat (바쁘냥)
+<p align="center"><img src="docs/icon.png" width="140" alt="BusyCat app icon"></p>
+
+<h1 align="center">BusyCat (바쁘냥)</h1>
 
 A macOS menu-bar app like [RunCat](https://github.com/Kyome22/menubar_runcat) — a
 running cat whose speed reflects how busy your Mac is. Unlike RunCat, **BusyCat
@@ -7,7 +9,7 @@ rendering) makes the cat run too.
 
 🇰🇷 [한국어 README](README.ko.md)
 
-![BusyCat running in the menu bar](docs/demo.gif)
+<p align="center"><img src="docs/demo.gif" alt="BusyCat running in the menu bar"></p>
 
 ## Why
 

@@ -1,4 +1,6 @@
-# 바쁘냥 (BusyCat)
+<p align="center"><img src="docs/icon.png" width="140" alt="바쁘냥 앱 아이콘"></p>
+
+<h1 align="center">바쁘냥 (BusyCat)</h1>
 
 [RunCat](https://github.com/Kyome22/menubar_runcat)처럼 메뉴바에서 고양이가
 달리는데, **얼마나 바쁜지에 따라 속도가 변하는** macOS 메뉴바 앱입니다. RunCat과
@@ -7,7 +9,7 @@
 
 🇺🇸 [English README](README.md)
 
-![메뉴바에서 달리는 바쁘냥](docs/demo.gif)
+<p align="center"><img src="docs/demo.gif" alt="메뉴바에서 달리는 바쁘냥"></p>
 
 ## 왜 만들었나
 
