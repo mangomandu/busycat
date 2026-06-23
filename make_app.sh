@@ -13,7 +13,17 @@ cp "Info.plist" "$APP/Contents/Info.plist"
 
 # Ad-hoc sign so macOS is happy launching it locally.
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
-
 echo "Built $APP"
-echo "Run it:        open $APP"
-echo "Install:       cp -R $APP /Applications/   (then open it once)"
+
+# `./make_app.sh --install` (or -i): update the /Applications copy and relaunch.
+if [ "${1:-}" = "--install" ] || [ "${1:-}" = "-i" ]; then
+    killall BusyCat 2>/dev/null || true
+    sleep 1
+    rm -rf "/Applications/$APP"
+    cp -R "$APP" /Applications/
+    open "/Applications/$APP"
+    echo "Installed to /Applications/$APP and relaunched."
+else
+    echo "Run it:        open $APP"
+    echo "Install/update /Applications:  ./make_app.sh --install"
+fi
