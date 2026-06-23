@@ -120,10 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         layout()
         _ = sampler.sampleAll()
         startAnimation(interval: currentInterval)
-        sampleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
-        sampleTimer?.tolerance = 0.2
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
+        timer.tolerance = 0.2
+        // .common so it keeps firing while the menu is open (event-tracking mode),
+        // otherwise the panel only refreshes on close/reopen.
+        RunLoop.main.add(timer, forMode: .common)
+        sampleTimer = timer
         tick()
     }
 
