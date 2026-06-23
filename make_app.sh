@@ -7,9 +7,10 @@ swift build -c release
 
 APP="BusyCat.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/release/BusyCat" "$APP/Contents/MacOS/BusyCat"
 cp "Info.plist" "$APP/Contents/Info.plist"
+cp "assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc sign so macOS is happy launching it locally.
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
