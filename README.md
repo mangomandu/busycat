@@ -7,6 +7,8 @@ rendering) makes the cat run too.
 
 🇰🇷 [한국어 README](README.ko.md)
 
+![BusyCat running in the menu bar](docs/demo.gif)
+
 ## Why
 
 RunCat only watches the CPU, so GPU-bound work — for example running ML
@@ -30,6 +32,8 @@ App Store, so it can read the GPU via IOKit without `sudo`.
 - **Lightweight:** ~0.1% idle CPU — lighter than RunCat while watching more.
 - No Dock icon (`LSUIElement`). Settings persist (`UserDefaults`).
 
+<p align="center"><img src="docs/panel.png" width="300" alt="BusyCat detailed stats panel"></p>
+
 ## Build & install
 
 Requires the macOS Swift toolchain (Xcode Command Line Tools). No other
@@ -42,6 +46,16 @@ dependencies.
 
 Quit from the cat's menu → **바쁘냥 종료** (⌘Q). To launch at login, add
 `BusyCat.app` under System Settings → General → Login Items.
+
+## Updating
+
+There is **no auto-update** — it's an ad-hoc-signed app, not from the App Store.
+To update, pull and rebuild:
+
+```bash
+git pull
+./make_app.sh --install   # quits, replaces /Applications/BusyCat.app, relaunches
+```
 
 ## How it works
 
