@@ -47,8 +47,12 @@ final class SystemSampler {
     // averages over its ~5s update interval) and brief spikes — e.g. another app's
     // menu rendering — don't make the cat sprint.
     private let emaAlpha = 0.8  // exp(-1/5): ~5-second memory
+    // Cache the host port once; mach_host_self() returns a send right the caller
+    // must balance, so calling it every sample would slowly leak port references.
+    private let host = mach_host_self()
     private var prevUser: UInt64 = 0
     private var prevSystem: UInt64 = 0
+    private var prevNice: UInt64 = 0
     private var prevTotalTicks: UInt64 = 0
     private var cpuPrimed = false
     private var sysEMA = 0.0
@@ -62,13 +66,20 @@ final class SystemSampler {
     private var downEMA = 0.0
     private var upEMA = 0.0
     private var netEMAPrimed = false
-    // GPU EMA (raw display + compute that drives the cat). Smoothed so brief
-    // compositing spikes don't sprint the cat; embeddings are sustained so the
-    // ~5s ramp still catches them.
+    // GPU EMA (raw + render smoothed independently; compute derived from them).
     private var gpuRawEMA = 0.0
     private var gpuRenderEMA = 0.0
-    private var gpuComputeEMA = 0.0
     private var gpuEMAPrimed = false
+    // Slow/heavy metrics (disk, network type+IP, battery) refreshed every ~5s
+    // while the menu is open, not every tick — they barely change second-to-second.
+    private var slowTick = 0
+    private var slowPrimed = false
+    private var cDisk: (percent: Double, used: Double, total: Double) = (0, 0, 0)
+    private var cNet: (type: String, ip: String) = ("—", "—")
+    private var cBat: (percent: Double?, charging: Bool, onAC: Bool,
+                       health: Double?, cycles: Int?, temp: Double?) = (nil, false, false, nil, nil, nil)
+
+    deinit { mach_port_deallocate(mach_task_self_, host) }
 
     /// Cheap metrics needed every second to drive the cat (CPU/GPU/memory are all
     /// single fast kernel calls). Used while the menu is closed — i.e. ~always.
@@ -80,18 +91,18 @@ final class SystemSampler {
         m.cpuUser = c.user
         let g = GPUReader.stats()
         if gpuEMAPrimed {
-            gpuComputeEMA = gpuComputeEMA * emaAlpha + g.compute * (1 - emaAlpha)
             gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
             gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
         } else {
-            gpuComputeEMA = g.compute
             gpuRawEMA = g.raw
             gpuRenderEMA = g.render
             gpuEMAPrimed = true
         }
-        m.gpu = gpuComputeEMA
         m.gpuRaw = gpuRawEMA
         m.gpuRender = gpuRenderEMA
+        // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
+        // so ticks where integer render momentarily ≥ raw don't bias the cat low.
+        m.gpu = max(0, gpuRawEMA - gpuRenderEMA)
         let mem = memory()
         m.memory = mem.percent
         m.memPressure = mem.pressure
@@ -106,23 +117,30 @@ final class SystemSampler {
     /// rows aren't visible otherwise.
     func sampleAll() -> Metrics {
         var m = sampleLight()
-        let d = disk()
-        m.disk = d.percent
-        m.diskUsed = d.used
-        m.diskTotal = d.total
+        // Network throughput is meaningful per-second, so read it every tick…
         let net = network()
         m.netDown = net.down
         m.netUp = net.up
-        let info = networkInfo()
-        m.netType = info.type
-        m.localIP = info.ip
-        let bat = battery()
-        m.battery = bat.percent
-        m.charging = bat.charging
-        m.onAC = bat.onAC
-        m.batHealth = bat.health
-        m.batCycles = bat.cycles
-        m.batTemp = bat.temp
+        // …but the heavy, slow-changing reads (disk volume query, SCNetworkInterface
+        // lookup, full battery property dict) only every ~5s.
+        if !slowPrimed || slowTick % 5 == 0 {
+            cDisk = disk()
+            cNet = networkInfo()
+            cBat = battery()
+            slowPrimed = true
+        }
+        slowTick &+= 1
+        m.disk = cDisk.percent
+        m.diskUsed = cDisk.used
+        m.diskTotal = cDisk.total
+        m.netType = cNet.type
+        m.localIP = cNet.ip
+        m.battery = cBat.percent
+        m.charging = cBat.charging
+        m.onAC = cBat.onAC
+        m.batHealth = cBat.health
+        m.batCycles = cBat.cycles
+        m.batTemp = cBat.temp
         return m
     }
 
@@ -135,7 +153,7 @@ final class SystemSampler {
         )
         let result = withUnsafeMutablePointer(to: &info) { ptr in
             ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reb in
-                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, reb, &count)
+                host_statistics(host, HOST_CPU_LOAD_INFO, reb, &count)
             }
         }
         guard result == KERN_SUCCESS else { return (0, 0, 0) }
@@ -144,17 +162,17 @@ final class SystemSampler {
         let system = UInt64(info.cpu_ticks.1)   // SYSTEM
         let idle = UInt64(info.cpu_ticks.2)     // IDLE
         let nice = UInt64(info.cpu_ticks.3)     // NICE
-        // Normalized usage like RunCat: system & user as a fraction of total
-        // (nice in the denominator only). Each smoothed with its own EMA so the
-        // breakdown stays consistent (total = system + user).
+        // Normalized usage like Activity Monitor: user (incl. nice) and system as a
+        // fraction of total, so system + user + idle == 100 exactly and the panel's
+        // breakdown stays internally consistent. Each smoothed with its own EMA.
         let totalTicks = user &+ system &+ idle &+ nice
 
-        defer { prevUser = user; prevSystem = system; prevTotalTicks = totalTicks; cpuPrimed = true }
+        defer { prevUser = user; prevSystem = system; prevNice = nice; prevTotalTicks = totalTicks; cpuPrimed = true }
         guard cpuPrimed else { return (0, 0, 0) }
-        let dUser = Double(user &- prevUser)
+        let dUser = Double((user &- prevUser) &+ (nice &- prevNice))  // nice counts as user
         let dSys = Double(system &- prevSystem)
         let dTotal = Double(totalTicks &- prevTotalTicks)
-        guard dTotal > 0 else { return (min(99.9, sysEMA + userEMA), sysEMA, userEMA) }
+        guard dTotal > 0 else { return (min(100, sysEMA + userEMA), sysEMA, userEMA) }
         let instSys = dSys / dTotal * 100
         let instUser = dUser / dTotal * 100
         if cpuEMAPrimed {
@@ -165,7 +183,7 @@ final class SystemSampler {
             userEMA = instUser
             cpuEMAPrimed = true
         }
-        return (min(99.9, sysEMA + userEMA), sysEMA, userEMA)
+        return (min(100, sysEMA + userEMA), sysEMA, userEMA)
     }
 
     // MARK: Memory — Activity Monitor's model: Used = App + Wired + Compressed,
@@ -178,7 +196,7 @@ final class SystemSampler {
         )
         let kr = withUnsafeMutablePointer(to: &stats) { ptr in
             ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reb in
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, reb, &count)
+                host_statistics64(host, HOST_VM_INFO64, reb, &count)
             }
         }
         guard kr == KERN_SUCCESS else { return (0, 0, 0, 0, 0) }
@@ -207,8 +225,9 @@ final class SystemSampler {
             let total = v.volumeTotalCapacity,
             let avail = v.volumeAvailableCapacityForImportantUsage, total > 0
         else { return (0, 0, 0) }
-        let used = Double(total) - Double(avail)
-        return (max(0, min(100, used / Double(total) * 100)), used, Double(total))
+        // available-for-important-usage can exceed total (counts purgeable), so clamp.
+        let used = max(0, Double(total) - Double(avail))
+        return (min(100, used / Double(total) * 100), used, Double(total))
     }
 
     // MARK: Network — bytes/s up & down across physical interfaces
@@ -277,7 +296,9 @@ final class SystemSampler {
         let onAC = (d["ExternalConnected"] as? Bool) ?? false
         let charging = (d["IsCharging"] as? Bool) ?? false
         let cycles = d["CycleCount"] as? Int
-        let temp = (d["Temperature"] as? Int).map { Double($0) / 100 }
+        // Temperature is centi-°C on this hardware (3030 → 30.3°C). Some models
+        // report differently; show only a plausible value, else "—".
+        let temp = (d["Temperature"] as? Int).map { Double($0) / 100 }.flatMap { (0...80).contains($0) ? $0 : nil }
 
         var pct: Double? = nil
         if let c = curCap, let m = maxCap, m > 0 { pct = Double(c) / Double(m) * 100 }

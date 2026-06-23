@@ -30,9 +30,12 @@ final class StatsView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    private var cachedSections: [Section] = []
+
     func update(_ m: Metrics, history: [Double]) {
         metrics = m
         cpuHistory = history
+        cachedSections = sections()   // build once per update, reused by resize()+draw()
         resize()
         needsDisplay = true
     }
@@ -87,9 +90,10 @@ final class StatsView: NSView {
     }
 
     private func resize() {
+        let secs = cachedSections.isEmpty ? sections() : cachedSections
         let h = padTop + padBottom
-            + sections().map(sectionHeight).reduce(0, +)
-            + CGFloat(max(0, sections().count - 1)) * sectionGap
+            + secs.map(sectionHeight).reduce(0, +)
+            + CGFloat(max(0, secs.count - 1)) * sectionGap
         setFrameSize(NSSize(width: panelWidth, height: h))
     }
 
@@ -98,7 +102,7 @@ final class StatsView: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        let secs = sections()
+        let secs = cachedSections.isEmpty ? sections() : cachedSections
         var y = padTop
         for (i, s) in secs.enumerated() {
             let top = y
@@ -128,22 +132,37 @@ final class StatsView: NSView {
         }
     }
 
-    private func drawIcon(_ names: [String], centerY: CGFloat) {
+    // Tinted SF Symbols are static given the appearance, so cache them instead of
+    // re-loading + re-rendering all icons on every draw. Invalidated on dark/light.
+    private var iconCache: [String: NSImage] = [:]
+    private var iconAppearance: NSAppearance.Name?
+
+    private func tintedIcon(_ names: [String]) -> NSImage? {
+        let appName = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        if appName != iconAppearance { iconCache.removeAll(); iconAppearance = appName }
+        let key = names.joined(separator: "|")
+        if let cached = iconCache[key] { return cached }
         let cfg = NSImage.SymbolConfiguration(pointSize: iconSize, weight: .regular)
         guard let base = names.lazy
             .compactMap({ NSImage(systemSymbolName: $0, accessibilityDescription: nil) })
-            .first?.withSymbolConfiguration(cfg) else { return }
-        let s = base.size
-        let scale = min(1, iconSize / max(s.width, s.height))
-        let w = s.width * scale, h = s.height * scale
-        let rect = NSRect(x: iconX + (iconSize - w) / 2, y: centerY - h / 2, width: w, height: h)
-        let tinted = NSImage(size: rect.size, flipped: false) { r in
+            .first?.withSymbolConfiguration(cfg) else { return nil }
+        let color = NSColor.secondaryLabelColor
+        let tinted = NSImage(size: base.size, flipped: false) { r in
             base.draw(in: r)
-            NSColor.secondaryLabelColor.setFill()
+            color.setFill()
             r.fill(using: .sourceAtop)
             return true
         }
-        tinted.draw(in: rect)
+        iconCache[key] = tinted
+        return tinted
+    }
+
+    private func drawIcon(_ names: [String], centerY: CGFloat) {
+        guard let img = tintedIcon(names) else { return }
+        let s = img.size
+        let scale = min(1, iconSize / max(s.width, s.height))
+        let w = s.width * scale, h = s.height * scale
+        img.draw(in: NSRect(x: iconX + (iconSize - w) / 2, y: centerY - h / 2, width: w, height: h))
     }
 
     private func drawBar(in rect: NSRect, fraction: Double) {

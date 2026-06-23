@@ -305,9 +305,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var usage = driver.value(latest)
         if invert { usage = 100 - usage }
         let target = interval(forUsage: usage)
-        // Tiny threshold so speed tracks fractional load (note: GPU% from IOKit is
-        // integer-resolution, so GPU-driven speed steps in whole percents).
-        if abs(target - currentInterval) > 0.0005 {
+        // Relative threshold: only rebuild the timer when the rate changes
+        // meaningfully (>10%), so tiny EMA jitter doesn't recreate it every tick.
+        // A 49.5↔50 fps difference is invisible; the churn isn't free.
+        if abs(target - currentInterval) > currentInterval * 0.1 {
             currentInterval = target
             startAnimation(interval: target)
         }
