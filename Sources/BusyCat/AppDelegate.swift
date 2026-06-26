@@ -216,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func catTintColor() -> NSColor {
         if thermalCatTint,
            ProcessInfo.processInfo.thermalState != .nominal {
-            return NSColor(calibratedRed: 0.78, green: 0.42, blue: 0.13, alpha: 1)
+            return NSColor(calibratedRed: 0.93, green: 0.48, blue: 0.42, alpha: 1)
         }
         return baseCatColor()
     }
@@ -224,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func catTintKey() -> String {
         if thermalCatTint,
            ProcessInfo.processInfo.thermalState != .nominal {
-            return "thermal-orange"
+            return "thermal-coral"
         }
         switch catColor {
         case .white: return "white"
@@ -349,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showTextItem = toggle("메뉴바에 % 표시", #selector(toggleShowText), showText)
         invertItem = toggle("속도 반전 (바쁘면 느리게)", #selector(toggleInvert), invert)
         flipItem = toggle("좌우 반전", #selector(toggleFlip), flip)
-        thermalCatItem = toggle("열 압박 시 고양이 호박색", #selector(toggleThermalCatTint), thermalCatTint)
+        thermalCatItem = toggle("열 압박 시 고양이 코랄색", #selector(toggleThermalCatTint), thermalCatTint)
         loginItem = toggle("로그인 시 자동 실행", #selector(toggleLogin), isLoginEnabled())
         for it in [showTextItem!, invertItem!, flipItem!, thermalCatItem!, loginItem!] { menu.addItem(it) }
 

@@ -29,10 +29,14 @@ App Store, so it can read the GPU via IOKit without `sudo`.
 - **Detailed live panel** (click the cat): CPU, GPU, memory, disk, thermal state,
   network, battery — each mapped to Activity Monitor's own definitions where
   macOS exposes a comparable value.
+- **Temperature details menu**: hottest sensor, macOS thermal pressure, `pmset`
+  speed limits, and top temperature sensors are shown separately.
 - Show the load **%** next to the cat (toggle).
 - Invert speed (busier = slower), flip the cat's direction, choose cat color
-  (auto / white / black).
-- **Lightweight:** ~0.1% idle CPU — lighter than RunCat while watching more.
+  (auto / white / black). Optionally tint the cat coral when thermal pressure is
+  above nominal.
+- **Lightweight:** when the menu is closed, BusyCat reads only the values needed
+  to drive the cat, keeping idle CPU low.
 - No Dock icon (`LSUIElement`). Settings persist (`UserDefaults`).
 
 <p align="center"><img src="docs/panel.png" width="300" alt="BusyCat detailed stats panel"></p>
@@ -84,6 +88,21 @@ git pull
   volume capacity, `getifaddrs` byte deltas, IOKit `AppleSmartBattery`,
   `ProcessInfo.thermalState`, IOHID/AppleSMC temperature sensors, and
   `pmset -g therm` where available.
+- **Temperature vs thermal pressure**: the temperature shown in the menu is the
+  hottest valid SMC/IOHID sensor. Thermal pressure is macOS' own
+  `nominal / fair / serious / critical` state, which also reflects power,
+  scheduling, and throttling headroom. A Mac can report 60-100°C while still
+  being nominal, or throttle before a single sensor looks alarming.
+- **Sampling optimization**: when the menu is closed, BusyCat reads only the
+  CPU/GPU/memory values needed to drive the cat. Disk, network identity, battery,
+  full temperature sensors, and `pmset` are sampled only while the menu is open;
+  slow-changing values are cached for about 5 seconds, and `pmset -g therm` is
+  cached for about 30 seconds.
+- **Accuracy caveats**: GPU load is a best-effort interpretation of Apple
+  Silicon IOKit counters, and temperature sensor names are model-specific rather
+  than stable public API. BusyCat therefore shows temperature as the hottest
+  valid sensor it can read, while macOS thermal pressure remains the primary
+  signal for real throttling pressure.
 - **Rendering**: a `CALayer` sprite swapped by a timer (avoids the heavy menu-bar
   recomposite path on recent macOS).
 - **Speed**: `interval = 0.4 / clamp(usage / 5, 1...20)` → ~2.5 fps idle,

@@ -481,7 +481,7 @@ enum ThermalReader {
 
     private static func cachedPMSetOutput() -> String {
         let now = ProcessInfo.processInfo.systemUptime
-        guard cachedPMSetTherm.isEmpty || now >= nextPMSetRefresh else {
+        guard now >= nextPMSetRefresh else {
             return cachedPMSetTherm
         }
         cachedPMSetTherm = runPMSetTherm()
