@@ -66,7 +66,7 @@ Fresh installs start quiet and conservative:
 - Language: system language (Korean for `ko`, English otherwise)
 - Speed source: busiest of CPU/GPU
 - Menu-bar text: hidden
-- Memory fish: off
+- Memory pressure fish: off
 - Cat color: white
 - Graph/bar color: graphite
 - Speed invert: off

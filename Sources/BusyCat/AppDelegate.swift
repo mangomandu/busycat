@@ -653,7 +653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             items: StatusTextMode.allCases.map { ($0.label, $0.rawValue) },
             selected: statusTextMode.rawValue,
             action: #selector(settingsStatusTextChanged(_:)))))
-        stack.addArrangedSubview(checkBox(appText("메모리 생선 표시", "Memory fish display"), checked: memoryFish,
+        stack.addArrangedSubview(checkBox(appText("메모리 압력 생선 표시", "Memory pressure fish"), checked: memoryFish,
                                           action: #selector(settingsMemoryFishChanged(_:))))
 
         stack.addArrangedSubview(settingsGap())
