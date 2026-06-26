@@ -5,9 +5,12 @@ import AppKit
 /// graph (CPU sparkline / storage bar). Drawn entirely in `draw(_:)` so it's one
 /// lightweight view that only renders while the menu is open — zero idle cost.
 final class StatsView: NSView {
+    var onThermalHoverChanged: ((Bool, NSRect) -> Void)?
     private var metrics = Metrics()
     private var cpuHistory: [Double] = []
     private var meterTint = NSColor.systemGray
+    private var thermalRect: NSRect = .zero
+    private var thermalHovering = false
 
     private let panelWidth: CGFloat = 250
     private let iconX: CGFloat = 18
@@ -53,12 +56,14 @@ final class StatsView: NSView {
         let subs: [String]
         let graph: Graph
         let accent: NSColor?
+        let showsInfo: Bool
     }
 
     private func section(_ symbols: [String], _ title: String, subs: [String], _ graph: Graph,
-                         accent: NSColor? = nil, titleValue: String? = nil) -> Section {
+                         accent: NSColor? = nil, titleValue: String? = nil,
+                         showsInfo: Bool = false) -> Section {
         Section(symbols: symbols, title: title, titleValue: titleValue,
-                subs: subs, graph: graph, accent: accent)
+                subs: subs, graph: graph, accent: accent, showsInfo: showsInfo)
     }
 
     private func sections() -> [Section] {
@@ -74,12 +79,16 @@ final class StatsView: NSView {
             if b >= 1_000 { return String(format: "%.1f kB/s", b / 1e3) }
             return String(format: "%.0f byte/s", b)
         }
+        func netType(_ value: String) -> String {
+            if !AppLanguage.usesKorean, value == "이더넷" { return "Ethernet" }
+            return value
+        }
         func thermalState(_ raw: Int) -> String {
             switch ProcessInfo.ThermalState(rawValue: raw) {
-            case .nominal: return "정상"
-            case .fair: return "약간 높음"
-            case .serious: return "높음"
-            case .critical: return "위험"
+            case .nominal: return appText("정상", "Nominal")
+            case .fair: return appText("약간 높음", "Fair")
+            case .serious: return appText("높음", "Serious")
+            case .critical: return appText("위험", "Critical")
             default: return "—"
             }
         }
@@ -94,40 +103,47 @@ final class StatsView: NSView {
 
         let thermalAccent = thermalAccent(state: m.thermalState, speedLimit: m.cpuSpeedLimit)
         var thermalSubs = [
-            "최고 센서: \(temp(m.thermalTemp))",
+            "\(appText("최고 센서", "Hottest sensor")): \(temp(m.thermalTemp))",
         ]
         if let speedLimit = m.cpuSpeedLimit, speedLimit > 0, speedLimit < 100 {
-            thermalSubs.append("CPU 속도 제한: \(speedLimit)%")
+            thermalSubs.append("\(appText("CPU 속도 제한", "CPU speed limit")): \(speedLimit)%")
         }
         if let schedulerLimit = m.cpuSchedulerLimit, schedulerLimit > 0, schedulerLimit < 100 {
-            thermalSubs.append("스케줄러 제한: \(schedulerLimit)%")
+            thermalSubs.append("\(appText("스케줄러 제한", "Scheduler limit")): \(schedulerLimit)%")
         }
 
         var list: [Section] = [
             section(["cpu"], "CPU: \(p1(m.cpu))",
-                    subs: ["시스템: \(p1(m.cpuSystem))", "사용자: \(p1(m.cpuUser))",
-                           "대기: \(p1(max(0, 100 - m.cpu)))"], .spark),
+                    subs: ["\(appText("시스템", "System")): \(p1(m.cpuSystem))",
+                           "\(appText("사용자", "User")): \(p1(m.cpuUser))",
+                           "\(appText("대기", "Idle")): \(p1(max(0, 100 - m.cpu)))"], .spark),
             section(["gpucard", "cpu.fill"], "GPU: \(p0(m.gpuRaw))",
-                    subs: ["화면 합성: \(p0(m.gpuRender))", "속도 반영: \(p1(m.gpu))"], .none),
-            section(["memorychip"], "메모리: \(p1(m.memory))",
-                    subs: ["압력: \(p1(m.memPressure))", "앱 메모리: \(gb(m.memApp))",
-                           "와이어드 메모리: \(gb(m.memWired))", "압축됨: \(mem(m.memCompressed))"], .none),
-            section(["internaldrive"], "저장 용량: \(p1(m.disk)) 사용됨",
+                    subs: ["\(appText("화면 합성", "Screen compositing")): \(p0(m.gpuRender))",
+                           "\(appText("고양이 반영", "Cat speed basis")): \(p1(m.gpu))"], .none),
+            section(["memorychip"], "\(appText("메모리", "Memory")): \(p1(m.memory))",
+                    subs: ["\(appText("압력", "Pressure")): \(p1(m.memPressure))",
+                           "\(appText("앱 메모리", "App memory")): \(gb(m.memApp))",
+                           "\(appText("와이어드 메모리", "Wired memory")): \(gb(m.memWired))",
+                           "\(appText("압축됨", "Compressed")): \(mem(m.memCompressed))"], .none),
+            section(["internaldrive"], appText("저장 용량: \(p1(m.disk)) 사용됨", "Storage: \(p1(m.disk)) used"),
                     subs: ["\(gb(m.diskUsed)) / \(gb(m.diskTotal))"], .bar),
             section(["thermometer.medium", "thermometer"],
-                    "열 압박:", subs: thermalSubs, .none,
-                    accent: thermalAccent, titleValue: thermalState(m.thermalState)),
+                    "\(appText("열 압박", "Thermal pressure")):", subs: thermalSubs, .none,
+                    accent: thermalAccent, titleValue: thermalState(m.thermalState),
+                    showsInfo: true),
         ]
         if let b = m.battery {
             list.append(section(m.charging ? ["battery.100.bolt", "battery.100"] : ["battery.100"],
-                "배터리: \(String(format: "%.0f%%", b))",
-                subs: ["전원 공급원: \(m.onAC ? "전원 어댑터" : "배터리")",
-                       "성능 최대치: \(m.batHealth.map { String(format: "%.1f%%", $0) } ?? "—")",
-                       "사이클 수: \(m.batCycles.map(String.init) ?? "—")",
-                       "온도: \(m.batTemp.map { String(format: "%.1f°C", $0) } ?? "—")"], .none))
+                "\(appText("배터리", "Battery")): \(String(format: "%.0f%%", b))",
+                subs: ["\(appText("전원 공급원", "Power source")): \(m.onAC ? appText("전원 어댑터", "Power adapter") : appText("배터리", "Battery"))",
+                       "\(appText("성능 최대치", "Maximum capacity")): \(m.batHealth.map { String(format: "%.1f%%", $0) } ?? "—")",
+                       "\(appText("사이클 수", "Cycle count")): \(m.batCycles.map(String.init) ?? "—")",
+                       "\(appText("온도", "Temperature")): \(m.batTemp.map { String(format: "%.1f°C", $0) } ?? "—")"], .none))
         }
-        list.append(section(["wifi", "network"], "네트워크: \(m.netType)",
-            subs: ["로컬 IP: \(m.localIP)", "업로드: \(rate(m.netUp))", "다운로드: \(rate(m.netDown))"],
+        list.append(section(["wifi", "network"], "\(appText("네트워크", "Network")): \(netType(m.netType))",
+            subs: ["\(appText("로컬 IP", "Local IP")): \(m.localIP)",
+                   "\(appText("업로드", "Upload")): \(rate(m.netUp))",
+                   "\(appText("다운로드", "Download")): \(rate(m.netDown))"],
             .none))
         return list
     }
@@ -147,10 +163,29 @@ final class StatsView: NSView {
 
     override var intrinsicContentSize: NSSize { frame.size }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+            owner: self,
+            userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateThermalHover(with: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setThermalHover(false)
+    }
+
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
         let secs = cachedSections.isEmpty ? sections() : cachedSections
+        thermalRect = .zero
         var y = padTop
         for (i, s) in secs.enumerated() {
             let top = y
@@ -169,6 +204,10 @@ final class StatsView: NSView {
                 y += graphH + 4
             }
             drawIcon(s.symbols, centerY: (top + y) / 2, color: s.accent ?? NSColor.secondaryLabelColor)
+            if s.showsInfo {
+                thermalRect = NSRect(x: 0, y: top - 2, width: bounds.width, height: y - top + 4)
+                drawInfoBadge(centerY: (top + y) / 2, color: s.accent ?? .secondaryLabelColor)
+            }
             y += sectionGap
             if i < secs.count - 1 {
                 NSColor.separatorColor.setStroke()
@@ -181,6 +220,20 @@ final class StatsView: NSView {
         }
     }
 
+    private func updateThermalHover(with point: NSPoint) {
+        setThermalHover(!thermalRect.isEmpty && thermalRect.contains(point))
+    }
+
+    private func setThermalHover(_ hovering: Bool) {
+        guard hovering != thermalHovering else { return }
+        thermalHovering = hovering
+        onThermalHoverChanged?(hovering, thermalRect)
+    }
+
+    func resetThermalHover() {
+        thermalHovering = false
+    }
+
     private func drawTitle(_ section: Section, at point: NSPoint) {
         let attrs: [NSAttributedString.Key: Any] = [.font: titleFont, .foregroundColor: NSColor.labelColor]
         (section.title as NSString).draw(at: point, withAttributes: attrs)
@@ -188,6 +241,25 @@ final class StatsView: NSView {
         let x = point.x + (section.title as NSString).size(withAttributes: attrs).width + 4
         (value as NSString).draw(at: NSPoint(x: x, y: point.y),
             withAttributes: [.font: titleFont, .foregroundColor: section.accent ?? NSColor.labelColor])
+    }
+
+    private func drawInfoBadge(centerY: CGFloat, color: NSColor) {
+        let cfg = NSImage.SymbolConfiguration(pointSize: 7, weight: .bold)
+        guard let base = NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg) else { return }
+        let image = NSImage(size: base.size, flipped: false) { r in
+            base.draw(in: r)
+            color.withAlphaComponent(0.55).setFill()
+            r.fill(using: .sourceAtop)
+            return true
+        }
+        let size = image.size
+        let iconTop = centerY - iconSize / 2
+        image.draw(in: NSRect(
+            x: iconX - 2,
+            y: iconTop - 1,
+            width: size.width,
+            height: size.height))
     }
 
     // Tinted SF Symbols are static given the appearance, so cache them instead of

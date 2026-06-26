@@ -99,6 +99,7 @@ final class SystemSampler {
     // GPU EMA (raw + render smoothed independently; compute derived from them).
     private var gpuRawEMA = 0.0
     private var gpuRenderEMA = 0.0
+    private var gpuSubtractRenderer = true
     private var gpuEMAPrimed = false
     // Slow/heavy metrics (disk, network type+IP, battery, thermal) refreshed by
     // wall time while the menu is open — they barely change second-to-second.
@@ -110,6 +111,9 @@ final class SystemSampler {
     private var cBat: (percent: Double?, charging: Bool, onAC: Bool,
                        health: Double?, cycles: Int?, temp: Double?) = (nil, false, false, nil, nil, nil)
     private var cThermal = ThermalReader.Snapshot()
+    private var cStatusTemperature: Double?
+    private var nextStatusTemperatureRefresh = 0.0
+    private var statusTemperaturePrimed = false
 
     deinit { mach_port_deallocate(mach_task_self_, host) }
 
@@ -130,11 +134,14 @@ final class SystemSampler {
             gpuRenderEMA = g.render
             gpuEMAPrimed = true
         }
+        gpuSubtractRenderer = g.subtractRenderer
         m.gpuRaw = gpuRawEMA
         m.gpuRender = gpuRenderEMA
         // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
         // so ticks where integer render momentarily ≥ raw don't bias the cat low.
-        m.gpu = MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
+        m.gpu = gpuSubtractRenderer
+            ? MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
+            : gpuRawEMA
         let mem = memory()
         m.memory = mem.percent
         m.memPressure = mem.pressure
@@ -142,6 +149,18 @@ final class SystemSampler {
         m.memWired = mem.wired
         m.memCompressed = mem.compressed
         return m
+    }
+
+    /// Lightweight temperature for menu-bar text. This reads only temperature
+    /// sensors and avoids the full menu snapshot path (disk/network/battery/pmset).
+    func temperatureForStatusText() -> Double? {
+        let now = ProcessInfo.processInfo.systemUptime
+        if !statusTemperaturePrimed || now >= nextStatusTemperatureRefresh {
+            cStatusTemperature = ThermalReader.hottestTemperature()
+            statusTemperaturePrimed = true
+            nextStatusTemperatureRefresh = now + slowRefreshInterval
+        }
+        return cStatusTemperature
     }
 
     /// Full snapshot including the costlier reads (disk volume query, getifaddrs,
@@ -161,6 +180,9 @@ final class SystemSampler {
             cNet = networkInfo()
             cBat = battery()
             cThermal = ThermalReader.snapshot()
+            cStatusTemperature = cThermal.temperature
+            statusTemperaturePrimed = true
+            nextStatusTemperatureRefresh = now + slowRefreshInterval
             slowPrimed = true
             nextSlowRefresh = now + slowRefreshInterval
         }
@@ -175,7 +197,7 @@ final class SystemSampler {
         m.batHealth = cBat.health
         m.batCycles = cBat.cycles
         m.batTemp = cBat.temp
-        m.thermalState = cThermal.state
+        m.thermalState = ProcessInfo.processInfo.thermalState.rawValue
         m.thermalTemp = cThermal.temperature
         m.thermalTempSensor = cThermal.temperatureSensor
         m.thermalCPUTemp = cThermal.cpuTemperature
@@ -439,6 +461,15 @@ enum ThermalReader {
         s.cpuSchedulerLimit = limits.scheduler
         s.cpuAvailableCPUs = limits.available
         return s
+    }
+
+    static func hottestTemperature() -> Double? {
+        let hid = temperatureSensors()
+        let smc = SMCReader.shared.temperatureSensors()
+        return (hid + smc)
+            .map(\.value)
+            .filter { $0 > 0 && $0 < 120 }
+            .max()
     }
 
     static func parsePMSetTherm(_ output: String)
@@ -742,13 +773,13 @@ enum GPUReader {
     /// above Renderer. So `Device − Renderer` isolates real compute — a brief
     /// menu/Mission-Control composite ≈ 0, an embedding stays high — far better
     /// than a fixed baseline that big menu renders could exceed.
-    static func stats() -> (raw: Double, render: Double) {
+    static func stats() -> (raw: Double, render: Double, subtractRenderer: Bool) {
         if cachedService == 0 { cachedService = findAccelerator() }
-        guard cachedService != 0 else { return (0, 0) }
+        guard cachedService != 0 else { return (0, 0, true) }
         guard let perf = perfStats(cachedService) else {
             IOObjectRelease(cachedService)  // service vanished — re-match next time
             cachedService = 0
-            return (0, 0)
+            return (0, 0, true)
         }
         return counters(from: perf)
     }
@@ -783,7 +814,7 @@ enum GPUReader {
     }
 
     static func counters(from perf: [String: Any])
-        -> (raw: Double, render: Double) {
+        -> (raw: Double, render: Double, subtractRenderer: Bool) {
         func percent(_ key: String) -> Double? {
             guard let value = perf[key] as? NSNumber else { return nil }
             return max(0, min(100, value.doubleValue))
@@ -795,15 +826,16 @@ enum GPUReader {
         // ~10-15% just from normal menu-bar compositing (including our own cat),
         // which would keep the cat sprinting at idle and waste CPU.
         if let raw = percent("Device Utilization %") {
-            return (raw, render)
+            return (raw, render, true)
         }
 
         // Best-effort display fallback only. These GPUs do not expose enough
-        // information to guarantee Device−Renderer compute isolation.
+        // information to guarantee Device−Renderer compute isolation, so don't
+        // subtract renderer again from a value that may already be graphics-only.
         if let activity = percent("GPU Activity(%)") {
-            return (activity, render)
+            return (activity, render, false)
         }
         let pipeline = max(render, percent("Tiler Utilization %") ?? 0)
-        return (pipeline, render)
+        return (pipeline, render, false)
     }
 }

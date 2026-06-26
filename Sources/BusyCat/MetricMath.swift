@@ -35,6 +35,17 @@ enum MetricMath {
     static func gpuCompute(raw: Double, render: Double) -> Double {
         max(0, raw - render)
     }
+
+    static func speedUsage(base: Double, inverted: Bool) -> Double {
+        inverted ? 100 - base : base
+    }
+
+    /// RAM fish gauge level from memory pressure-like percentage.
+    static func memoryFishLevel(pressure: Double, maxFish: Int = 5) -> Int {
+        guard maxFish > 0 else { return 0 }
+        let clamped = max(0, min(100, pressure))
+        return max(0, min(maxFish, Int((clamped / 100 * Double(maxFish)).rounded())))
+    }
 }
 
 enum SpeedCurve {

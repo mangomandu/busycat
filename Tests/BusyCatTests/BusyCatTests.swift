@@ -18,6 +18,13 @@ struct BusyCatTests {
         #expect(result.used == 0)
     }
 
+    @Test func diskUsageTreatsMissingAvailabilityAsFullyUsed() {
+        let result = MetricMath.diskUsage(
+            total: 1_000, importantAvailable: nil, regularAvailable: nil)
+        #expect(result.percent == 100)
+        #expect(result.used == 1_000)
+    }
+
     @Test func cpuCounterDeltaHandlesUInt32Wrap() {
         #expect(MetricMath.counterDelta(
             current: 5, previous: UInt32.max - 4) == 10)
@@ -29,6 +36,18 @@ struct BusyCatTests {
         #expect(abs(SpeedCurve.interval(forUsage: 500) - 0.02) < 0.0001)
     }
 
+    @Test func speedUsageMatchesInvertSetting() {
+        #expect(MetricMath.speedUsage(base: 80, inverted: false) == 80)
+        #expect(MetricMath.speedUsage(base: 80, inverted: true) == 20)
+    }
+
+    @Test func memoryFishGaugeClamps() {
+        #expect(MetricMath.memoryFishLevel(pressure: -10) == 0)
+        #expect(MetricMath.memoryFishLevel(pressure: 44) == 2)
+        #expect(MetricMath.memoryFishLevel(pressure: 100) == 5)
+        #expect(MetricMath.memoryFishLevel(pressure: 150) == 5)
+    }
+
     @Test func deviceGPUCountersAndComputePath() {
         let result = GPUReader.counters(from: [
             "Device Utilization %": 80,
@@ -36,7 +55,30 @@ struct BusyCatTests {
         ])
         #expect(result.raw == 80)
         #expect(result.render == 15)
+        #expect(result.subtractRenderer)
         #expect(MetricMath.gpuCompute(raw: result.raw, render: result.render) == 65)
+    }
+
+    @Test func gpuComputeClampsRendererAboveRaw() {
+        #expect(MetricMath.gpuCompute(raw: 10, render: 20) == 0)
+    }
+
+    @Test func legacyGPUFallbackDoesNotSubtractItselfToZero() {
+        let activity = GPUReader.counters(from: [
+            "GPU Activity(%)": 32,
+            "Renderer Utilization %": 32,
+        ])
+        #expect(activity.raw == 32)
+        #expect(activity.render == 32)
+        #expect(!activity.subtractRenderer)
+
+        let pipeline = GPUReader.counters(from: [
+            "Renderer Utilization %": 32,
+            "Tiler Utilization %": 10,
+        ])
+        #expect(pipeline.raw == 32)
+        #expect(pipeline.render == 32)
+        #expect(!pipeline.subtractRenderer)
     }
 
     @Test func numericVersionComparison() {

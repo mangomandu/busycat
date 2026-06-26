@@ -18,14 +18,52 @@ import Cocoa
 import QuartzCore
 import ServiceManagement
 
+enum AppLanguage: String, CaseIterable {
+    case system, korean, english
+
+    static var current: AppLanguage {
+        AppLanguage(rawValue: UserDefaults.standard.string(forKey: "language") ?? "") ?? .system
+    }
+
+    static var usesKorean: Bool {
+        switch current {
+        case .system:
+            return Locale.preferredLanguages.first?.lowercased().hasPrefix("ko") == true
+        case .korean:
+            return true
+        case .english:
+            return false
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .system: return appText("시스템 언어 (한국어 외 영어)", "System language (English unless Korean)")
+        case .korean: return appText("한국어", "Korean")
+        case .english: return appText("영어", "English")
+        }
+    }
+}
+
+func appText(_ ko: String, _ en: String) -> String {
+    AppLanguage.usesKorean ? ko : en
+}
+
+func countText(_ count: Int, _ koUnit: String, _ enSingular: String, _ enPlural: String) -> String {
+    if AppLanguage.usesKorean {
+        return "\(count)\(koUnit)"
+    }
+    return "\(count) \(count == 1 ? enSingular : enPlural)"
+}
+
 enum SpeedDriver: String, CaseIterable {
     case busiest, cpu, gpu, memory
     var label: String {
         switch self {
-        case .busiest: return "가장 바쁜 쪽"
-        case .cpu: return "CPU 사용률"
-        case .gpu: return "GPU 부하"
-        case .memory: return "메모리 사용률"
+        case .busiest: return appText("가장 바쁜 쪽", "Busiest")
+        case .cpu: return appText("CPU 사용률", "CPU usage")
+        case .gpu: return appText("GPU 부하", "GPU load")
+        case .memory: return appText("메모리 사용률", "Memory usage")
         }
     }
     func value(_ m: Metrics) -> Double {
@@ -42,9 +80,9 @@ enum CatColor: String, CaseIterable {
     case auto, white, black
     var label: String {
         switch self {
-        case .auto: return "자동 (시스템 모드)"
-        case .white: return "흰색"
-        case .black: return "검정"
+        case .auto: return appText("자동 (메뉴바 대비)", "Auto (menu-bar contrast)")
+        case .white: return appText("흰색", "White")
+        case .black: return appText("검정", "Black")
         }
     }
 }
@@ -53,12 +91,12 @@ enum MeterColor: String, CaseIterable {
     case graphite, accent, blue, green, orange, purple
     var label: String {
         switch self {
-        case .graphite: return "흑연"
-        case .accent: return "시스템 강조색"
-        case .blue: return "파랑"
-        case .green: return "초록"
-        case .orange: return "주황"
-        case .purple: return "보라"
+        case .graphite: return appText("흑연", "Graphite")
+        case .accent: return appText("시스템 강조색", "System accent")
+        case .blue: return appText("파랑", "Blue")
+        case .green: return appText("초록", "Green")
+        case .orange: return appText("주황", "Orange")
+        case .purple: return appText("보라", "Purple")
         }
     }
     var color: NSColor {
@@ -74,6 +112,51 @@ enum MeterColor: String, CaseIterable {
     }
 }
 
+enum StatusTextMode: String, CaseIterable {
+    case off, driver, cpu, gpu, memory, temperature, thermal
+    var label: String {
+        switch self {
+        case .off: return appText("표시 안 함", "Hidden")
+        case .driver: return appText("고양이 속도 %", "Cat speed %")
+        case .cpu: return "CPU %"
+        case .gpu: return "GPU %"
+        case .memory: return appText("메모리 %", "Memory %")
+        case .temperature: return appText("온도", "Temperature")
+        case .thermal: return appText("열 압박", "Thermal pressure")
+        }
+    }
+}
+
+final class SpeedStatusRowView: NSView {
+    private let textField = NSTextField(labelWithString: "")
+
+    init(_ title: String) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 190, height: 20))
+        textField.font = .menuFont(ofSize: 11)
+        textField.textColor = .secondaryLabelColor
+        textField.lineBreakMode = .byTruncatingTail
+        textField.maximumNumberOfLines = 1
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(textField)
+        NSLayoutConstraint.activate([
+            textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            textField.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+        update(title)
+    }
+
+    func update(_ title: String) {
+        textField.stringValue = title
+        let font = textField.font ?? .menuFont(ofSize: 11)
+        let width = min(210, max(150, (title as NSString).size(withAttributes: [.font: font]).width + 26))
+        setFrameSize(NSSize(width: width, height: 20))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let barHeight: CGFloat = 18
     private let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -84,8 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let container = NSView()
     private let spriteLayer = CALayer()
     private let textLayer = CATextLayer()
+    private let fishLayer = CALayer()
     private var tintedFrames: [CGImage] = []
     private var lastTintKey = ""
+    private var lastFishLevel = -1
 
     private var index = 0
     private var runnerTimer: Timer?
@@ -98,6 +183,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuOpen = false
 
     private let defaults = UserDefaults.standard
+    private var language: AppLanguage {
+        get { AppLanguage.current }
+        set {
+            if newValue == .system {
+                defaults.removeObject(forKey: "language")
+            } else {
+                defaults.set(newValue.rawValue, forKey: "language")
+            }
+        }
+    }
     private var driver: SpeedDriver {
         get { SpeedDriver(rawValue: defaults.string(forKey: "driver") ?? "") ?? .busiest }
         set { defaults.set(newValue.rawValue, forKey: "driver") }
@@ -110,9 +205,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         get { MeterColor(rawValue: defaults.string(forKey: "meterColor") ?? "") ?? .graphite }
         set { defaults.set(newValue.rawValue, forKey: "meterColor") }
     }
-    private var showText: Bool {
-        get { defaults.bool(forKey: "showText") }
-        set { defaults.set(newValue, forKey: "showText") }
+    private var statusTextMode: StatusTextMode {
+        get {
+            if let raw = defaults.string(forKey: "statusTextMode"),
+               let mode = StatusTextMode(rawValue: raw) {
+                return mode
+            }
+            return defaults.bool(forKey: "showText") ? .driver : .off
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: "statusTextMode")
+            defaults.set(newValue != .off, forKey: "showText")
+        }
+    }
+    private var memoryFish: Bool {
+        get { defaults.bool(forKey: "memoryFish") }
+        set { defaults.set(newValue, forKey: "memoryFish") }
     }
     private var invert: Bool {
         get { defaults.bool(forKey: "invert") }
@@ -129,21 +237,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let statsView = StatsView()
     private var cpuHistory: [Double] = []
-    private var driverItems: [NSMenuItem] = []
-    private var catColorItems: [NSMenuItem] = []
-    private var meterColorItems: [NSMenuItem] = []
-    private var showTextItem: NSMenuItem!
-    private var invertItem: NSMenuItem!
-    private var flipItem: NSMenuItem!
-    private var thermalCatItem: NSMenuItem!
-    private var loginItem: NSMenuItem!
     private var updateItem: NSMenuItem!
     private var speedStatusItem: NSMenuItem!
-    private var thermalParentItem: NSMenuItem!
-    private let thermalMenu = NSMenu()
-    private var thermalMenuSignature = ""
+    private var speedStatusView: SpeedStatusRowView?
     private var availableUpdate: String?
     private let menu = NSMenu()
+    private var settingsPanel: NSPanel?
+    private var thermalPopover: NSPopover?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single instance: if another copy is already running, quit immediately so
@@ -155,6 +255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !dupes.isEmpty { NSApp.terminate(nil); return }
 
         setupSprite()
+        statsView.onThermalHoverChanged = { [weak self] hovering, rect in
+            hovering ? self?.showThermalPopover(relativeTo: rect) : self?.hideThermalPopover()
+        }
         buildMenu()
         registerSleepWake()
         rebuildArtwork()
@@ -195,6 +298,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Sprite frames must switch immediately. Prevent Core Animation from
         // creating an implicit contents animation for every timer tick.
         spriteLayer.actions = ["contents": NSNull()]
+        fishLayer.contentsGravity = .resizeAspect
+        fishLayer.contentsScale = scale
+        fishLayer.actions = ["contents": NSNull()]
+        fishLayer.isHidden = true
         textLayer.contentsScale = scale
         textLayer.font = font
         textLayer.fontSize = font.pointSize
@@ -202,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         textLayer.isHidden = true
         container.layer?.addSublayer(textLayer)
         container.layer?.addSublayer(spriteLayer)
+        container.layer?.addSublayer(fishLayer)
     }
 
     private func baseCatColor() -> NSColor {
@@ -213,42 +321,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func catTintColor() -> NSColor {
-        if thermalCatTint,
-           ProcessInfo.processInfo.thermalState != .nominal {
-            return NSColor(calibratedRed: 0.93, green: 0.48, blue: 0.42, alpha: 1)
-        }
-        return baseCatColor()
+    private func thermalOutlineActive() -> Bool {
+        thermalCatTint && ProcessInfo.processInfo.thermalState != .nominal
+    }
+
+    private func thermalOutlineColor() -> NSColor {
+        NSColor(calibratedRed: 1.0, green: 0.12, blue: 0.18, alpha: 1)
     }
 
     private func catTintKey() -> String {
-        if thermalCatTint,
-           ProcessInfo.processInfo.thermalState != .nominal {
-            return "thermal-coral"
-        }
+        let prefix = thermalOutlineActive() ? "thermal-outline-" : ""
         switch catColor {
-        case .white: return "white"
-        case .black: return "black"
+        case .white: return prefix + "white"
+        case .black: return prefix + "black"
         case .auto:
-            return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? "auto-white" : "auto-black"
+            let suffix = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? "auto-white"
+                : "auto-black"
+            return prefix + suffix
         }
     }
 
     private func rebuildArtwork() {
         lastTintKey = catTintKey()
-        let color = catTintColor()
+        let color = baseCatColor()
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        tintedFrames = CatFrames.load(height: barHeight, flipped: flip)
-            .compactMap { tinted($0, color: color, scale: scale) }
+        let frames = CatFrames.load(height: barHeight, flipped: flip)
+        if thermalOutlineActive() {
+            tintedFrames = frames.compactMap {
+                outlined($0, fill: color, outline: thermalOutlineColor(), scale: scale)
+            }
+        } else {
+            tintedFrames = frames.compactMap { tinted($0, color: color, scale: scale) }
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         textLayer.foregroundColor = color.cgColor
         if index >= tintedFrames.count { index = 0 }
         spriteLayer.contents = tintedFrames.first
         CATransaction.commit()
+        lastFishLevel = -1
     }
 
     private func tinted(_ image: NSImage, color: NSColor, scale: CGFloat) -> CGImage? {
+        tintedImage(image, color: color, scale: scale)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    private func tintedImage(_ image: NSImage, color: NSColor, scale: CGFloat) -> NSImage? {
         let w = Int((image.size.width * scale).rounded())
         let h = Int((image.size.height * scale).rounded())
         guard w > 0, h > 0,
@@ -265,6 +384,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         color.set()
         rect.fill(using: .sourceAtop)
         NSGraphicsContext.restoreGraphicsState()
+        let out = NSImage(size: image.size)
+        out.addRepresentation(rep)
+        out.isTemplate = false
+        return out
+    }
+
+    private func outlined(_ image: NSImage, fill: NSColor, outline: NSColor, scale: CGFloat) -> CGImage? {
+        guard let outlineImage = tintedImage(image, color: outline, scale: scale),
+              let fillImage = tintedImage(image, color: fill, scale: scale)
+        else { return nil }
+        let w = Int((image.size.width * scale).rounded())
+        let h = Int((image.size.height * scale).rounded())
+        guard w > 0, h > 0,
+            let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return nil }
+        rep.size = image.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        let rect = NSRect(origin: .zero, size: image.size)
+        let outlinePx = 1 / scale
+        for offset in [
+            NSPoint(x: -outlinePx, y: 0),
+            NSPoint(x: outlinePx, y: 0),
+            NSPoint(x: 0, y: -outlinePx),
+            NSPoint(x: 0, y: outlinePx),
+        ] {
+            outlineImage.draw(in: rect.offsetBy(dx: offset.x, dy: offset.y))
+        }
+        fillImage.draw(in: rect)
+        NSGraphicsContext.restoreGraphicsState()
         return rep.cgImage
     }
 
@@ -275,8 +427,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         var x: CGFloat = 0
-        if showText {
-            let s = String(format: "%.0f%%", driver.value(latest))
+        if let s = statusText(for: latest) {
             let tw = (s as NSString).size(withAttributes: [.font: font]).width.rounded() + 4
             let lh = (font.ascender - font.descender).rounded()
             textLayer.isHidden = false
@@ -287,86 +438,170 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             textLayer.isHidden = true
         }
         spriteLayer.frame = CGRect(x: x, y: catY, width: catW, height: barHeight)
-        statusItem.length = x + catW
+        x += catW
+        if memoryFish {
+            let fishW: CGFloat = 13
+            let gap: CGFloat = 3
+            fishLayer.isHidden = false
+            fishLayer.frame = CGRect(x: x + gap, y: catY, width: fishW, height: barHeight)
+            x += gap + fishW
+        } else {
+            fishLayer.isHidden = true
+        }
+        statusItem.length = x
         CATransaction.commit()
+    }
+
+    // MARK: RAM fish gauge
+
+    private func updateFishPile() {
+        guard memoryFish else { return }
+        let level = MetricMath.memoryFishLevel(pressure: latest.memPressure)
+        guard level != lastFishLevel else { return }
+        lastFishLevel = level
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fishLayer.contents = fishPileImage(level: level, scale: scale)
+        CATransaction.commit()
+    }
+
+    private func fishPileImage(level: Int, scale: CGFloat) -> CGImage? {
+        let wPt: CGFloat = 13
+        let w = Int((wPt * scale).rounded())
+        let h = Int((barHeight * scale).rounded())
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        let color = baseCatColor().withAlphaComponent(0.72).cgColor
+        let fishH: CGFloat = 3
+        let gap: CGFloat = 0.4
+        let pileH = CGFloat(level) * fishH + CGFloat(max(0, level - 1)) * gap
+        let startY = (barHeight - pileH) / 2
+        for i in 0..<level {
+            drawFish(ctx, x: 1, y: startY + CGFloat(i) * (fishH + gap),
+                     w: wPt - 2, h: fishH, color: color, flip: i % 2 == 0)
+        }
+        return ctx.makeImage()
+    }
+
+    private func drawFish(_ ctx: CGContext, x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat,
+                          color: CGColor, flip: Bool) {
+        ctx.setFillColor(color)
+        let bodyW = w * 0.72
+        let tailW = w - bodyW
+        let bodyX = flip ? x + (w - bodyW) : x
+        ctx.fillEllipse(in: CGRect(x: bodyX, y: y, width: bodyW, height: h))
+        let tx = flip ? bodyX : bodyX + bodyW
+        let dir: CGFloat = flip ? -1 : 1
+        ctx.beginPath()
+        ctx.move(to: CGPoint(x: tx, y: y + h / 2))
+        ctx.addLine(to: CGPoint(x: tx + dir * tailW, y: y))
+        ctx.addLine(to: CGPoint(x: tx + dir * tailW, y: y + h))
+        ctx.closePath()
+        ctx.fillPath()
     }
 
     // MARK: Menu
 
     private func buildMenu() {
+        hideThermalPopover()
+        menu.removeAllItems()
+
+        let speedView = SpeedStatusRowView(speedStatusTitle(for: latest))
+        speedStatusView = speedView
+        speedStatusItem = NSMenuItem()
+        speedStatusItem.view = speedView
+        menu.addItem(speedStatusItem)
+        menu.addItem(.separator())
+
         let statsItem = NSMenuItem()
         statsItem.view = statsView
         menu.addItem(statsItem)
         menu.addItem(.separator())
 
-        speedStatusItem = NSMenuItem(title: speedStatusTitle(for: latest), action: nil, keyEquivalent: "")
-        menu.addItem(speedStatusItem)
-
-        thermalParentItem = NSMenuItem(title: "온도 상세", action: nil, keyEquivalent: "")
-        thermalParentItem.submenu = thermalMenu
-        menu.addItem(thermalParentItem)
-        menu.addItem(.separator())
-
-        let driverParent = NSMenuItem(title: "속도 기준", action: nil, keyEquivalent: "")
-        let driverMenu = NSMenu()
-        for d in SpeedDriver.allCases {
-            let it = NSMenuItem(title: d.label, action: #selector(selectDriver(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = d.rawValue
-            it.state = (d == driver) ? .on : .off
-            driverMenu.addItem(it)
-            driverItems.append(it)
-        }
-        driverParent.submenu = driverMenu
-        menu.addItem(driverParent)
-
-        let colorParent = NSMenuItem(title: "고양이 색", action: nil, keyEquivalent: "")
-        let colorMenu = NSMenu()
-        for c in CatColor.allCases {
-            let it = NSMenuItem(title: c.label, action: #selector(selectCatColor(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = c.rawValue
-            it.state = (c == catColor) ? .on : .off
-            colorMenu.addItem(it)
-            catColorItems.append(it)
-        }
-        colorParent.submenu = colorMenu
-        menu.addItem(colorParent)
-
-        let meterParent = NSMenuItem(title: "그래프/바 색", action: nil, keyEquivalent: "")
-        let meterMenu = NSMenu()
-        for c in MeterColor.allCases {
-            let it = NSMenuItem(title: c.label, action: #selector(selectMeterColor(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = c.rawValue
-            it.state = (c == meterColor) ? .on : .off
-            meterMenu.addItem(it)
-            meterColorItems.append(it)
-        }
-        meterParent.submenu = meterMenu
-        menu.addItem(meterParent)
-
-        showTextItem = toggle("메뉴바에 % 표시", #selector(toggleShowText), showText)
-        invertItem = toggle("속도 반전 (바쁘면 느리게)", #selector(toggleInvert), invert)
-        flipItem = toggle("좌우 반전", #selector(toggleFlip), flip)
-        thermalCatItem = toggle("열 압박 시 고양이 코랄색", #selector(toggleThermalCatTint), thermalCatTint)
-        loginItem = toggle("로그인 시 자동 실행", #selector(toggleLogin), isLoginEnabled())
-        for it in [showTextItem!, invertItem!, flipItem!, thermalCatItem!, loginItem!] { menu.addItem(it) }
+        let settings = NSMenuItem(title: appText("설정…", "Settings…"),
+                                  action: #selector(showSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
 
         menu.addItem(.separator())
-        let activity = NSMenuItem(title: "활성 상태 보기 열기",
+        let activity = NSMenuItem(title: appText("활성 상태 보기 열기", "Open Activity Monitor"),
                                   action: #selector(openActivityMonitor), keyEquivalent: "")
         activity.target = self
         menu.addItem(activity)
-        updateItem = NSMenuItem(title: "업데이트 확인",
+        updateItem = NSMenuItem(title: appText("업데이트 확인", "Check for Updates"),
                                 action: #selector(updateItemClicked), keyEquivalent: "")
         updateItem.target = self
         menu.addItem(updateItem)
-        let quit = NSMenuItem(title: "바쁘냥 종료", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: appText("바쁘냥 종료", "Quit BusyCat"),
+                              action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         menu.delegate = self
         statusItem.menu = menu
+    }
+
+    private func showThermalPopover(relativeTo rect: NSRect) {
+        guard menuOpen else { return }
+        if thermalPopover?.isShown == true { return }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSViewController()
+        popover.contentViewController?.view = thermalPopoverView(for: latest)
+        thermalPopover = popover
+        popover.show(relativeTo: rect, of: statsView, preferredEdge: .maxX)
+    }
+
+    private func hideThermalPopover() {
+        thermalPopover?.close()
+        thermalPopover = nil
+    }
+
+    private func thermalPopoverView(for m: Metrics) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+
+        func row(_ title: String, secondary: Bool = false) -> NSTextField {
+            let field = NSTextField(labelWithString: title)
+            field.font = secondary ? .systemFont(ofSize: 11) : .systemFont(ofSize: 12)
+            field.textColor = secondary ? .secondaryLabelColor : .labelColor
+            field.lineBreakMode = .byTruncatingTail
+            field.maximumNumberOfLines = 1
+            field.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+            return field
+        }
+
+        stack.addArrangedSubview(row("\(appText("최고 센서", "Hottest sensor")): \(temp(m.thermalTemp))"))
+        stack.addArrangedSubview(row("\(appText("열 압박", "Thermal pressure")): \(thermalState(m.thermalState))"))
+        if let cpu = m.thermalCPUTemp { stack.addArrangedSubview(row("\(appText("CPU 클러스터", "CPU cluster")): \(temp(cpu))")) }
+        if let battery = m.batTemp { stack.addArrangedSubview(row("\(appText("배터리", "Battery")): \(temp(battery))")) }
+        if let limit = m.cpuSpeedLimit { stack.addArrangedSubview(row("\(appText("CPU 속도 제한", "CPU speed limit")): \(limit)%")) }
+        if let limit = m.cpuSchedulerLimit { stack.addArrangedSubview(row("\(appText("스케줄러 제한", "Scheduler limit")): \(limit)%")) }
+        if let cpus = m.cpuAvailableCPUs { stack.addArrangedSubview(row("\(appText("사용 가능 CPU", "Available CPUs")): \(cpus)")) }
+        stack.addArrangedSubview(row("\(appText("읽은 온도 채널", "Temperature channels")): \(countText(m.thermalSensorCount, "개", "channel", "channels"))"))
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        stack.addArrangedSubview(separator)
+        stack.addArrangedSubview(row(appText("가장 높은 센서", "Hottest sensors"), secondary: true))
+
+        if m.thermalTopSensors.isEmpty {
+            stack.addArrangedSubview(row(appText("읽힌 온도 센서 없음", "No temperature sensors read")))
+        } else {
+            for sensor in m.thermalTopSensors.prefix(10) {
+                stack.addArrangedSubview(row("\(sensor.name) · \(sensor.source): \(temp(sensor.value))"))
+            }
+        }
+        return stack
     }
 
     private func toggle(_ title: String, _ action: Selector, _ on: Bool) -> NSMenuItem {
@@ -374,6 +609,135 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         it.target = self
         it.state = on ? .on : .off
         return it
+    }
+
+    // MARK: Settings
+
+    @objc private func showSettings() {
+        settingsPanel?.close()
+        settingsPanel = buildSettingsPanel()
+        NSApp.activate(ignoringOtherApps: true)
+        settingsPanel?.center()
+        settingsPanel?.makeKeyAndOrderFront(nil)
+    }
+
+    private func buildSettingsPanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 455),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false)
+        panel.title = appText("바쁘냥 설정", "BusyCat Settings")
+        panel.isReleasedWhenClosed = false
+
+        let root = NSView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView = root
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 22),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -22),
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -18)
+        ])
+
+        stack.addArrangedSubview(settingsHeader(appText("메뉴바", "Menu Bar")))
+        stack.addArrangedSubview(settingsRow(appText("표시", "Display"), popUp(
+            items: StatusTextMode.allCases.map { ($0.label, $0.rawValue) },
+            selected: statusTextMode.rawValue,
+            action: #selector(settingsStatusTextChanged(_:)))))
+        stack.addArrangedSubview(checkBox(appText("메모리 생선 표시", "Memory fish display"), checked: memoryFish,
+                                          action: #selector(settingsMemoryFishChanged(_:))))
+
+        stack.addArrangedSubview(settingsGap())
+        stack.addArrangedSubview(settingsHeader(appText("속도", "Speed")))
+        stack.addArrangedSubview(settingsRow(appText("속도 기준", "Speed source"), popUp(
+            items: SpeedDriver.allCases.map { ($0.label, $0.rawValue) },
+            selected: driver.rawValue,
+            action: #selector(settingsDriverChanged(_:)))))
+        stack.addArrangedSubview(checkBox(appText("속도 반전 (바쁘면 느리게)", "Invert speed (busier = slower)"), checked: invert,
+                                          action: #selector(settingsInvertChanged(_:))))
+
+        stack.addArrangedSubview(settingsGap())
+        stack.addArrangedSubview(settingsHeader(appText("디자인", "Design")))
+        stack.addArrangedSubview(settingsRow(appText("고양이 색", "Cat color"), popUp(
+            items: CatColor.allCases.map { ($0.label, $0.rawValue) },
+            selected: catColor.rawValue,
+            action: #selector(settingsCatColorChanged(_:)))))
+        stack.addArrangedSubview(settingsRow(appText("그래프/바 색", "Graph/bar color"), popUp(
+            items: MeterColor.allCases.map { ($0.label, $0.rawValue) },
+            selected: meterColor.rawValue,
+            action: #selector(settingsMeterColorChanged(_:)))))
+        stack.addArrangedSubview(checkBox(appText("좌우 반전", "Flip direction"), checked: flip,
+                                          action: #selector(settingsFlipChanged(_:))))
+        stack.addArrangedSubview(checkBox(appText("열 압박 시 빨간 테두리", "Red outline on thermal pressure"), checked: thermalCatTint,
+                                          action: #selector(settingsThermalCatChanged(_:))))
+
+        stack.addArrangedSubview(settingsGap())
+        stack.addArrangedSubview(settingsHeader(appText("시스템", "System")))
+        stack.addArrangedSubview(settingsRow(appText("언어", "Language"), popUp(
+            items: AppLanguage.allCases.map { ($0.label, $0.rawValue) },
+            selected: language.rawValue,
+            action: #selector(settingsLanguageChanged(_:)))))
+        stack.addArrangedSubview(checkBox(appText("로그인 시 자동 실행", "Launch at login"), checked: isLoginEnabled(),
+                                          action: #selector(settingsLoginChanged(_:))))
+
+        return panel
+    }
+
+    private func settingsHeader(_ title: String) -> NSTextField {
+        let field = NSTextField(labelWithString: title)
+        field.font = .systemFont(ofSize: 13, weight: .semibold)
+        field.textColor = .labelColor
+        return field
+    }
+
+    private func settingsGap() -> NSView {
+        let view = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.heightAnchor.constraint(equalToConstant: 4).isActive = true
+        return view
+    }
+
+    private func settingsRow(_ label: String, _ control: NSView) -> NSStackView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 12
+        let labelView = NSTextField(labelWithString: label)
+        labelView.textColor = .secondaryLabelColor
+        labelView.widthAnchor.constraint(equalToConstant: 104).isActive = true
+        row.addArrangedSubview(labelView)
+        row.addArrangedSubview(control)
+        return row
+    }
+
+    private func popUp(items: [(String, String)], selected: String, action: Selector) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+        for item in items {
+            button.addItem(withTitle: item.0)
+            button.lastItem?.representedObject = item.1
+        }
+        if let index = items.firstIndex(where: { $0.1 == selected }) {
+            button.selectItem(at: index)
+        }
+        button.target = self
+        button.action = action
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 210).isActive = true
+        return button
+    }
+
+    private func checkBox(_ title: String, checked: Bool, action: Selector) -> NSButton {
+        let button = NSButton(checkboxWithTitle: title, target: self, action: action)
+        button.state = checked ? .on : .off
+        return button
     }
 
     // MARK: Sampling + animation
@@ -386,21 +750,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             latest.cpu = light.cpu
             latest.gpu = light.gpu
             latest.memory = light.memory
+            latest.memPressure = light.memPressure
             latest.thermalState = ProcessInfo.processInfo.thermalState.rawValue
+            if statusTextMode == .temperature {
+                latest.thermalTemp = sampler.temperatureForStatusText()
+            }
         }
         cpuHistory.append(latest.cpu)
         if cpuHistory.count > 60 { cpuHistory.removeFirst() }
         if menuOpen {
             statsView.update(latest, history: cpuHistory, meterColor: meterColor.color)
             updateSpeedStatusItem()
-            updateThermalMenu(latest)
         }
         if catTintKey() != lastTintKey { rebuildArtwork() }
-        if showText { layout() }
+        if statusTextMode != .off { layout() }
+        if memoryFish { updateFishPile() }
 
         guard !asleep else { return }
-        var usage = driver.value(latest)
-        if invert { usage = 100 - usage }
+        let usage = effectiveSpeedUsage(latest)
         let target = SpeedCurve.interval(forUsage: usage)
         // Relative threshold: only rebuild the timer when the rate changes
         // meaningfully (>10%), so tiny EMA jitter doesn't recreate it every tick.
@@ -426,76 +793,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spriteLayer.contents = tintedFrames[index]
     }
 
+    private func statusText(for m: Metrics) -> String? {
+        switch statusTextMode {
+        case .off:
+            return nil
+        case .driver:
+            return String(format: "%.0f%%", effectiveSpeedUsage(m))
+        case .cpu:
+            return String(format: "CPU %.0f%%", m.cpu)
+        case .gpu:
+            return String(format: "GPU %.0f%%", m.gpu)
+        case .memory:
+            return String(format: "RAM %.0f%%", m.memory)
+        case .temperature:
+            return m.thermalTemp.map { String(format: "%.0f°C", $0) } ?? appText("온도 —", "Temp —")
+        case .thermal:
+            return thermalState(m.thermalState)
+        }
+    }
+
     private func speedLabel(for m: Metrics) -> String {
         switch driver {
         case .busiest:
-            return m.gpu > m.cpu ? "가장 바쁜 쪽 (GPU 부하)" : "가장 바쁜 쪽 (CPU 사용률)"
+            return m.gpu > m.cpu ? appText("GPU 부하", "GPU load") : appText("CPU 사용률", "CPU usage")
         case .cpu, .gpu, .memory:
             return driver.label
         }
     }
 
-    private func speedStatusTitle(for m: Metrics) -> String {
-        "현재 기준 · \(speedLabel(for: m))"
-    }
-
-    private func updateSpeedStatusItem() {
-        speedStatusItem?.title = speedStatusTitle(for: latest)
-    }
-
-    private func updateThermalMenu(_ m: Metrics) {
-        let signature = thermalMenuSignature(for: m)
-        guard signature != thermalMenuSignature else { return }
-        thermalMenuSignature = signature
-
-        thermalMenu.removeAllItems()
-        addThermalInfo("최고 센서", temp(m.thermalTemp))
-        addThermalInfo("열 압박", thermalState(m.thermalState))
-        if let cpu = m.thermalCPUTemp { addThermalInfo("CPU 클러스터", temp(cpu)) }
-        if let battery = m.batTemp { addThermalInfo("배터리", temp(battery)) }
-        if let limit = m.cpuSpeedLimit { addThermalInfo("CPU 속도 제한", "\(limit)%") }
-        if let limit = m.cpuSchedulerLimit { addThermalInfo("스케줄러 제한", "\(limit)%") }
-        if let cpus = m.cpuAvailableCPUs { addThermalInfo("사용 가능 CPU", "\(cpus)") }
-        addThermalInfo("읽은 온도 채널", "\(m.thermalSensorCount)개")
-
-        thermalMenu.addItem(.separator())
-        let header = NSMenuItem(title: "가장 높은 센서", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        thermalMenu.addItem(header)
-
-        if m.thermalTopSensors.isEmpty {
-            let empty = NSMenuItem(title: "읽힌 온도 센서 없음", action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            thermalMenu.addItem(empty)
-        } else {
-            for sensor in m.thermalTopSensors {
-                let item = NSMenuItem(
-                    title: "\(sensor.name) · \(sensor.source): \(temp(sensor.value))",
-                    action: nil,
-                    keyEquivalent: "")
-                item.toolTip = "Apple이 공개 문서로 고정 의미를 보장하지 않는 모델별 센서 이름일 수 있습니다."
-                thermalMenu.addItem(item)
-            }
+    private func speedShortLabel(for m: Metrics) -> String {
+        switch driver {
+        case .busiest:
+            return m.gpu > m.cpu ? "GPU" : "CPU"
+        case .cpu:
+            return "CPU"
+        case .gpu:
+            return "GPU"
+        case .memory:
+            return appText("메모리", "Memory")
         }
     }
 
-    private func thermalMenuSignature(for m: Metrics) -> String {
-        var parts: [String] = []
-        parts.append(temp(m.thermalTemp))
-        parts.append(String(m.thermalState))
-        parts.append(temp(m.thermalCPUTemp))
-        parts.append(temp(m.batTemp))
-        parts.append(m.cpuSpeedLimit.map(String.init) ?? "")
-        parts.append(m.cpuSchedulerLimit.map(String.init) ?? "")
-        parts.append(m.cpuAvailableCPUs.map(String.init) ?? "")
-        parts.append(String(m.thermalSensorCount))
-        parts += m.thermalTopSensors.map { "\($0.name):\($0.source):\(String(format: "%.1f", $0.value))" }
-        return parts.joined(separator: "|")
+    private func effectiveSpeedUsage(_ m: Metrics) -> Double {
+        MetricMath.speedUsage(base: driver.value(m), inverted: invert)
     }
 
-    private func addThermalInfo(_ label: String, _ value: String) {
-        let item = NSMenuItem(title: "\(label): \(value)", action: nil, keyEquivalent: "")
-        thermalMenu.addItem(item)
+    private func updateSpeedStatusItem() {
+        speedStatusView?.update(speedStatusTitle(for: latest))
+    }
+
+    private func speedStatusTitle(for m: Metrics) -> String {
+        "\(appText("속도 기준", "Speed source")): \(speedShortLabel(for: m))"
     }
 
     private func temp(_ value: Double?) -> String {
@@ -504,70 +852,128 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func thermalState(_ raw: Int) -> String {
         switch ProcessInfo.ThermalState(rawValue: raw) {
-        case .nominal: return "정상"
-        case .fair: return "약간 높음"
-        case .serious: return "높음"
-        case .critical: return "위험"
+        case .nominal: return appText("정상", "Nominal")
+        case .fair: return appText("약간 높음", "Fair")
+        case .serious: return appText("높음", "Serious")
+        case .critical: return appText("위험", "Critical")
         default: return "—"
         }
     }
 
     // MARK: Actions
 
-    @objc private func selectDriver(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let d = SpeedDriver(rawValue: raw)
-        else { return }
+    private func applyDriver(_ d: SpeedDriver) {
         driver = d
-        for it in driverItems { it.state = (it === sender) ? .on : .off }
         updateSpeedStatusItem()
         tick()
     }
 
-    @objc private func selectCatColor(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let c = CatColor(rawValue: raw)
-        else { return }
+    private func applyCatColor(_ c: CatColor) {
         catColor = c
-        for it in catColorItems { it.state = (it === sender) ? .on : .off }
         rebuildArtwork()
+        if memoryFish { updateFishPile() }
     }
 
-    @objc private func selectMeterColor(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let c = MeterColor(rawValue: raw)
-        else { return }
+    private func applyMeterColor(_ c: MeterColor) {
         meterColor = c
-        for it in meterColorItems { it.state = (it === sender) ? .on : .off }
         if menuOpen {
             statsView.update(latest, history: cpuHistory, meterColor: c.color)
         }
     }
 
-    @objc private func toggleShowText() {
-        showText.toggle()
-        showTextItem.state = showText ? .on : .off
+    private func applyStatusTextMode(_ mode: StatusTextMode) {
+        statusTextMode = mode
         layout()
-    }
-
-    @objc private func toggleInvert() {
-        invert.toggle()
-        invertItem.state = invert ? .on : .off
         tick()
     }
 
-    @objc private func toggleFlip() {
-        flip.toggle()
-        flipItem.state = flip ? .on : .off
+    private func applyLanguage(_ lang: AppLanguage) {
+        language = lang
+        buildMenu()
+        layout()
+        tick()
+        if settingsPanel?.isVisible == true {
+            settingsPanel?.close()
+            settingsPanel = buildSettingsPanel()
+            settingsPanel?.center()
+            settingsPanel?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func applyMemoryFish(_ on: Bool) {
+        memoryFish = on
+        lastFishLevel = -1
+        layout()
+        updateFishPile()
+    }
+
+    private func applyInvert(_ on: Bool) {
+        invert = on
+        tick()
+    }
+
+    private func applyFlip(_ on: Bool) {
+        flip = on
         rebuildArtwork()
     }
 
-    @objc private func toggleThermalCatTint() {
-        thermalCatTint.toggle()
-        thermalCatItem.state = thermalCatTint ? .on : .off
+    private func applyThermalCatTint(_ on: Bool) {
+        thermalCatTint = on
         rebuildArtwork()
     }
 
-    @objc private func toggleLogin() {
-        setLogin(!isLoginEnabled())
-        loginItem.state = isLoginEnabled() ? .on : .off
+    private func applyLogin(_ on: Bool) {
+        setLogin(on)
+    }
+
+    private func selectedRaw(_ sender: NSPopUpButton) -> String? {
+        sender.selectedItem?.representedObject as? String
+    }
+
+    @objc private func settingsStatusTextChanged(_ sender: NSPopUpButton) {
+        guard let raw = selectedRaw(sender), let mode = StatusTextMode(rawValue: raw) else { return }
+        applyStatusTextMode(mode)
+    }
+
+    @objc private func settingsLanguageChanged(_ sender: NSPopUpButton) {
+        guard let raw = selectedRaw(sender), let lang = AppLanguage(rawValue: raw) else { return }
+        applyLanguage(lang)
+    }
+
+    @objc private func settingsDriverChanged(_ sender: NSPopUpButton) {
+        guard let raw = selectedRaw(sender), let d = SpeedDriver(rawValue: raw) else { return }
+        applyDriver(d)
+    }
+
+    @objc private func settingsCatColorChanged(_ sender: NSPopUpButton) {
+        guard let raw = selectedRaw(sender), let c = CatColor(rawValue: raw) else { return }
+        applyCatColor(c)
+    }
+
+    @objc private func settingsMeterColorChanged(_ sender: NSPopUpButton) {
+        guard let raw = selectedRaw(sender), let c = MeterColor(rawValue: raw) else { return }
+        applyMeterColor(c)
+    }
+
+    @objc private func settingsMemoryFishChanged(_ sender: NSButton) {
+        applyMemoryFish(sender.state == .on)
+    }
+
+    @objc private func settingsInvertChanged(_ sender: NSButton) {
+        applyInvert(sender.state == .on)
+    }
+
+    @objc private func settingsFlipChanged(_ sender: NSButton) {
+        applyFlip(sender.state == .on)
+    }
+
+    @objc private func settingsThermalCatChanged(_ sender: NSButton) {
+        applyThermalCatTint(sender.state == .on)
+    }
+
+    @objc private func settingsLoginChanged(_ sender: NSButton) {
+        applyLogin(sender.state == .on)
+        sender.state = isLoginEnabled() ? .on : .off
     }
 
     @objc private func openActivityMonitor() {
@@ -587,7 +993,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(Updater.releasesPage)
             return
         }
-        updateItem.title = "업데이트 확인 중…"
+        updateItem.title = appText("업데이트 확인 중…", "Checking for Updates…")
         updateItem.action = nil
         Updater.check { [weak self] result in
             guard let self else { return }
@@ -596,21 +1002,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.setUpdateAvailable(v)
                 NSWorkspace.shared.open(Updater.releasesPage)
             case .upToDate:
-                self.updateItem.title = "업데이트 확인"
+                self.updateItem.title = appText("업데이트 확인", "Check for Updates")
                 self.updateItem.action = #selector(self.updateItemClicked)
                 NSApp.activate(ignoringOtherApps: true)
                 let a = NSAlert()
-                a.messageText = "최신 버전입니다"
-                a.informativeText = "현재 v\(Updater.currentVersion)이 최신입니다."
+                a.messageText = appText("최신 버전입니다", "You're up to date")
+                a.informativeText = appText(
+                    "현재 v\(Updater.currentVersion)이 최신입니다.",
+                    "Current v\(Updater.currentVersion) is the latest.")
                 a.runModal()
             case .failed:
-                self.updateItem.title = "업데이트 확인"
+                self.updateItem.title = appText("업데이트 확인", "Check for Updates")
                 self.updateItem.action = #selector(self.updateItemClicked)
                 NSApp.activate(ignoringOtherApps: true)
                 let a = NSAlert()
                 a.alertStyle = .warning
-                a.messageText = "업데이트를 확인할 수 없습니다"
-                a.informativeText = "네트워크 연결을 확인한 뒤 다시 시도해 주세요."
+                a.messageText = appText("업데이트를 확인할 수 없습니다", "Couldn't check for updates")
+                a.informativeText = appText(
+                    "네트워크 연결을 확인한 뒤 다시 시도해 주세요.",
+                    "Check your network connection and try again.")
                 a.runModal()
             }
         }
@@ -618,7 +1028,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setUpdateAvailable(_ v: String) {
         availableUpdate = v
-        updateItem.title = "🆕 새 버전 v\(v) 받기"
+        updateItem.title = appText("🆕 새 버전 v\(v) 받기", "🆕 Get v\(v)")
         updateItem.action = #selector(updateItemClicked)
         updateItem.target = self
     }
@@ -687,5 +1097,7 @@ extension AppDelegate: NSMenuDelegate {
 
     func menuDidClose(_ menu: NSMenu) {
         menuOpen = false
+        hideThermalPopover()
+        statsView.resetThermalHover()
     }
 }
