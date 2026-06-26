@@ -72,4 +72,15 @@ struct BusyCatTests {
         #expect(Updater.interpretLatestRelease(
             statusCode: 404, data: nil, currentVersion: "1.0") == .upToDate)
     }
+
+    @Test func pmsetThermalLimitsParseWithWhitespace() {
+        let result = ThermalReader.parsePMSetTherm("""
+            CPU_Scheduler_Limit = 100
+            CPU_Available_CPUs  = 10
+            CPU_Speed_Limit     = 87
+            """)
+        #expect(result.scheduler == 100)
+        #expect(result.available == 10)
+        #expect(result.speed == 87)
+    }
 }

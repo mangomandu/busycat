@@ -20,6 +20,14 @@ if CommandLine.arguments.contains("--metrics") {
           + "AC=\(m.onAC)  health=\(m.batHealth.map { String(format: "%.1f%%", $0) } ?? "—")  "
           + "cycles=\(m.batCycles.map(String.init) ?? "—")  "
           + "temp=\(m.batTemp.map { String(format: "%.1f°C", $0) } ?? "—")")
+    print("THERM state=\(m.thermalState)  "
+          + "representative=\(m.thermalTemp.map { String(format: "%.1f°C", $0) } ?? "—")"
+          + "\(m.thermalTempSensor.map { "(\($0))" } ?? "")  "
+          + "cpuCluster=\(m.thermalCPUTemp.map { String(format: "%.1f°C", $0) } ?? "—")  "
+          + "speedLimit=\(m.cpuSpeedLimit.map { "\($0)%" } ?? "—")  "
+          + "schedulerLimit=\(m.cpuSchedulerLimit.map { "\($0)%" } ?? "—")  "
+          + "availableCPUs=\(m.cpuAvailableCPUs.map(String.init) ?? "—")  "
+          + "sensors=\(m.thermalSensorCount)")
     exit(0)
 }
 
@@ -34,9 +42,20 @@ if CommandLine.arguments.contains("--statsdump") {
     m.disk = 10.4; m.diskUsed = 103.6e9; m.diskTotal = 994.6e9
     m.battery = 99; m.onAC = false; m.charging = false
     m.batHealth = 100; m.batCycles = 3; m.batTemp = 30.1
+    m.thermalState = ProcessInfo.ThermalState.nominal.rawValue
+    m.thermalTemp = 61.0; m.thermalTempSensor = "TCMb · SMC"; m.thermalCPUTemp = 51.8
+    m.cpuSpeedLimit = 100; m.cpuSchedulerLimit = 100
+    m.cpuAvailableCPUs = 10; m.thermalSensorCount = 58
+    m.thermalTopSensors = [
+        TemperatureSensor(name: "TCMb", value: 61.0, source: "SMC"),
+        TemperatureSensor(name: "pACC", value: 51.8, source: "IOHID"),
+        TemperatureSensor(name: "PMU tcal", value: 51.0, source: "IOHID"),
+        TemperatureSensor(name: "gas gauge battery", value: 30.1, source: "IOHID"),
+    ]
     m.netType = "Wi-Fi"; m.localIP = "192.168.0.2"; m.netUp = 819; m.netDown = 409
     let v = StatsView()
-    v.update(m, history: (0..<60).map { 20 + 18 * sin(Double($0) / 4) })
+    v.update(m, history: (0..<60).map { 20 + 18 * sin(Double($0) / 4) },
+             meterColor: .systemGray)
     // Render under dark appearance so the view's dynamic colors (labelColor,
     // secondaryLabelColor, tinted icons) resolve to their light-on-dark variants
     // — otherwise dark text on the dark menu bg comes out as unreadable gray.

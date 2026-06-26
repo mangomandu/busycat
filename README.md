@@ -26,8 +26,9 @@ App Store, so it can read the GPU via IOKit without `sudo`.
 - Running cat in the menu bar, speed ∝ system load.
 - Watches **CPU and GPU**. Pick what drives the speed: busiest (CPU·GPU), CPU
   only, GPU only, or memory.
-- **Detailed live panel** (click the cat): CPU, GPU, memory, disk, network,
-  battery — each mapped to Activity Monitor's own definitions.
+- **Detailed live panel** (click the cat): CPU, GPU, memory, disk, thermal state,
+  network, battery — each mapped to Activity Monitor's own definitions where
+  macOS exposes a comparable value.
 - Show the load **%** next to the cat (toggle).
 - Invert speed (busier = slower), flip the cat's direction, choose cat color
   (auto / white / black).
@@ -79,9 +80,10 @@ git pull
   against Activity Monitor.
 - **CPU**: `host_statistics` `HOST_CPU_LOAD_INFO` tick deltas, EMA-smoothed so it
   tracks Activity Monitor's feel.
-- **Memory / disk / network / battery**: `vm_statistics64`, volume capacity,
-  `getifaddrs` byte deltas, and IOKit `AppleSmartBattery` — each matched to
-  Activity Monitor's definitions.
+- **Memory / disk / network / battery / thermal state**: `vm_statistics64`,
+  volume capacity, `getifaddrs` byte deltas, IOKit `AppleSmartBattery`,
+  `ProcessInfo.thermalState`, IOHID/AppleSMC temperature sensors, and
+  `pmset -g therm` where available.
 - **Rendering**: a `CALayer` sprite swapped by a timer (avoids the heavy menu-bar
   recomposite path on recent macOS).
 - **Speed**: `interval = 0.4 / clamp(usage / 5, 1...20)` → ~2.5 fps idle,

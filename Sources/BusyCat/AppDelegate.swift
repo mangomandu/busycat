@@ -22,10 +22,10 @@ enum SpeedDriver: String, CaseIterable {
     case busiest, cpu, gpu, memory
     var label: String {
         switch self {
-        case .busiest: return "가장 바쁜 쪽 (CPU·GPU)"
-        case .cpu: return "CPU"
-        case .gpu: return "GPU"
-        case .memory: return "메모리"
+        case .busiest: return "가장 바쁜 쪽"
+        case .cpu: return "CPU 사용률"
+        case .gpu: return "GPU 부하"
+        case .memory: return "메모리 사용률"
         }
     }
     func value(_ m: Metrics) -> Double {
@@ -49,6 +49,31 @@ enum CatColor: String, CaseIterable {
     }
 }
 
+enum MeterColor: String, CaseIterable {
+    case graphite, accent, blue, green, orange, purple
+    var label: String {
+        switch self {
+        case .graphite: return "흑연"
+        case .accent: return "시스템 강조색"
+        case .blue: return "파랑"
+        case .green: return "초록"
+        case .orange: return "주황"
+        case .purple: return "보라"
+        }
+    }
+    var color: NSColor {
+        switch self {
+        case .graphite:
+            return .systemGray
+        case .accent: return .controlAccentColor
+        case .blue: return .systemBlue
+        case .green: return .systemGreen
+        case .orange: return .systemOrange
+        case .purple: return .systemPurple
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let barHeight: CGFloat = 18
     private let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -60,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let spriteLayer = CALayer()
     private let textLayer = CATextLayer()
     private var tintedFrames: [CGImage] = []
-    private var lastTintWhite = false
+    private var lastTintKey = ""
 
     private var index = 0
     private var runnerTimer: Timer?
@@ -81,6 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         get { CatColor(rawValue: defaults.string(forKey: "catColor") ?? "") ?? .white }
         set { defaults.set(newValue.rawValue, forKey: "catColor") }
     }
+    private var meterColor: MeterColor {
+        get { MeterColor(rawValue: defaults.string(forKey: "meterColor") ?? "") ?? .graphite }
+        set { defaults.set(newValue.rawValue, forKey: "meterColor") }
+    }
     private var showText: Bool {
         get { defaults.bool(forKey: "showText") }
         set { defaults.set(newValue, forKey: "showText") }
@@ -93,16 +122,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         get { defaults.bool(forKey: "flip") }
         set { defaults.set(newValue, forKey: "flip") }
     }
+    private var thermalCatTint: Bool {
+        get { defaults.bool(forKey: "thermalCatTint") }
+        set { defaults.set(newValue, forKey: "thermalCatTint") }
+    }
 
     private let statsView = StatsView()
     private var cpuHistory: [Double] = []
     private var driverItems: [NSMenuItem] = []
     private var catColorItems: [NSMenuItem] = []
+    private var meterColorItems: [NSMenuItem] = []
     private var showTextItem: NSMenuItem!
     private var invertItem: NSMenuItem!
     private var flipItem: NSMenuItem!
+    private var thermalCatItem: NSMenuItem!
     private var loginItem: NSMenuItem!
     private var updateItem: NSMenuItem!
+    private var speedStatusItem: NSMenuItem!
+    private var thermalParentItem: NSMenuItem!
+    private let thermalMenu = NSMenu()
     private var availableUpdate: String?
     private let menu = NSMenu()
 
@@ -165,18 +203,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         container.layer?.addSublayer(spriteLayer)
     }
 
-    private func wantWhite() -> Bool {
+    private func baseCatColor() -> NSColor {
         switch catColor {
-        case .white: return true
-        case .black: return false
+        case .white: return .white
+        case .black: return .black
         case .auto:
-            return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .white : .black
+        }
+    }
+
+    private func catTintColor() -> NSColor {
+        if thermalCatTint,
+           ProcessInfo.processInfo.thermalState != .nominal {
+            return NSColor(calibratedRed: 0.78, green: 0.42, blue: 0.13, alpha: 1)
+        }
+        return baseCatColor()
+    }
+
+    private func catTintKey() -> String {
+        if thermalCatTint,
+           ProcessInfo.processInfo.thermalState != .nominal {
+            return "thermal-orange"
+        }
+        switch catColor {
+        case .white: return "white"
+        case .black: return "black"
+        case .auto:
+            return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? "auto-white" : "auto-black"
         }
     }
 
     private func rebuildArtwork() {
-        lastTintWhite = wantWhite()
-        let color: NSColor = lastTintWhite ? .white : .black
+        lastTintKey = catTintKey()
+        let color = catTintColor()
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         tintedFrames = CatFrames.load(height: barHeight, flipped: flip)
             .compactMap { tinted($0, color: color, scale: scale) }
@@ -239,6 +298,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statsItem)
         menu.addItem(.separator())
 
+        speedStatusItem = NSMenuItem(title: speedStatusTitle(for: latest), action: nil, keyEquivalent: "")
+        menu.addItem(speedStatusItem)
+
+        thermalParentItem = NSMenuItem(title: "온도 상세", action: nil, keyEquivalent: "")
+        thermalParentItem.submenu = thermalMenu
+        menu.addItem(thermalParentItem)
+        menu.addItem(.separator())
+
         let driverParent = NSMenuItem(title: "속도 기준", action: nil, keyEquivalent: "")
         let driverMenu = NSMenu()
         for d in SpeedDriver.allCases {
@@ -265,11 +332,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         colorParent.submenu = colorMenu
         menu.addItem(colorParent)
 
+        let meterParent = NSMenuItem(title: "그래프/바 색", action: nil, keyEquivalent: "")
+        let meterMenu = NSMenu()
+        for c in MeterColor.allCases {
+            let it = NSMenuItem(title: c.label, action: #selector(selectMeterColor(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = c.rawValue
+            it.state = (c == meterColor) ? .on : .off
+            meterMenu.addItem(it)
+            meterColorItems.append(it)
+        }
+        meterParent.submenu = meterMenu
+        menu.addItem(meterParent)
+
         showTextItem = toggle("메뉴바에 % 표시", #selector(toggleShowText), showText)
         invertItem = toggle("속도 반전 (바쁘면 느리게)", #selector(toggleInvert), invert)
         flipItem = toggle("좌우 반전", #selector(toggleFlip), flip)
+        thermalCatItem = toggle("열 압박 시 고양이 호박색", #selector(toggleThermalCatTint), thermalCatTint)
         loginItem = toggle("로그인 시 자동 실행", #selector(toggleLogin), isLoginEnabled())
-        for it in [showTextItem!, invertItem!, flipItem!, loginItem!] { menu.addItem(it) }
+        for it in [showTextItem!, invertItem!, flipItem!, thermalCatItem!, loginItem!] { menu.addItem(it) }
 
         menu.addItem(.separator())
         let activity = NSMenuItem(title: "활성 상태 보기 열기",
@@ -304,11 +385,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             latest.cpu = light.cpu
             latest.gpu = light.gpu
             latest.memory = light.memory
+            latest.thermalState = ProcessInfo.processInfo.thermalState.rawValue
         }
         cpuHistory.append(latest.cpu)
         if cpuHistory.count > 60 { cpuHistory.removeFirst() }
-        if menuOpen { statsView.update(latest, history: cpuHistory) }
-        if catColor == .auto, wantWhite() != lastTintWhite { rebuildArtwork() }
+        if menuOpen {
+            statsView.update(latest, history: cpuHistory, meterColor: meterColor.color)
+            updateSpeedStatusItem()
+            updateThermalMenu(latest)
+        }
+        if catTintKey() != lastTintKey { rebuildArtwork() }
         if showText { layout() }
 
         guard !asleep else { return }
@@ -339,6 +425,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spriteLayer.contents = tintedFrames[index]
     }
 
+    private func speedLabel(for m: Metrics) -> String {
+        switch driver {
+        case .busiest:
+            return m.gpu > m.cpu ? "가장 바쁜 쪽 (GPU 부하)" : "가장 바쁜 쪽 (CPU 사용률)"
+        case .cpu, .gpu, .memory:
+            return driver.label
+        }
+    }
+
+    private func speedStatusTitle(for m: Metrics) -> String {
+        "현재 기준 · \(speedLabel(for: m))"
+    }
+
+    private func updateSpeedStatusItem() {
+        speedStatusItem?.title = speedStatusTitle(for: latest)
+    }
+
+    private func updateThermalMenu(_ m: Metrics) {
+        thermalMenu.removeAllItems()
+        addThermalInfo("최고 센서", temp(m.thermalTemp))
+        addThermalInfo("열 압박", thermalState(m.thermalState))
+        if let cpu = m.thermalCPUTemp { addThermalInfo("CPU 클러스터", temp(cpu)) }
+        if let battery = m.batTemp { addThermalInfo("배터리", temp(battery)) }
+        if let limit = m.cpuSpeedLimit { addThermalInfo("CPU 속도 제한", "\(limit)%") }
+        if let limit = m.cpuSchedulerLimit { addThermalInfo("스케줄러 제한", "\(limit)%") }
+        if let cpus = m.cpuAvailableCPUs { addThermalInfo("사용 가능 CPU", "\(cpus)") }
+        addThermalInfo("읽은 온도 채널", "\(m.thermalSensorCount)개")
+
+        thermalMenu.addItem(.separator())
+        let header = NSMenuItem(title: "가장 높은 센서", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        thermalMenu.addItem(header)
+
+        if m.thermalTopSensors.isEmpty {
+            let empty = NSMenuItem(title: "읽힌 온도 센서 없음", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            thermalMenu.addItem(empty)
+        } else {
+            for sensor in m.thermalTopSensors {
+                let item = NSMenuItem(
+                    title: "\(sensor.name) · \(sensor.source): \(temp(sensor.value))",
+                    action: nil,
+                    keyEquivalent: "")
+                item.toolTip = "Apple이 공개 문서로 고정 의미를 보장하지 않는 모델별 센서 이름일 수 있습니다."
+                thermalMenu.addItem(item)
+            }
+        }
+    }
+
+    private func addThermalInfo(_ label: String, _ value: String) {
+        let item = NSMenuItem(title: "\(label): \(value)", action: nil, keyEquivalent: "")
+        thermalMenu.addItem(item)
+    }
+
+    private func temp(_ value: Double?) -> String {
+        value.map { String(format: "%.1f°C", $0) } ?? "—"
+    }
+
+    private func thermalState(_ raw: Int) -> String {
+        switch ProcessInfo.ThermalState(rawValue: raw) {
+        case .nominal: return "정상"
+        case .fair: return "약간 높음"
+        case .serious: return "높음"
+        case .critical: return "위험"
+        default: return "—"
+        }
+    }
+
     // MARK: Actions
 
     @objc private func selectDriver(_ sender: NSMenuItem) {
@@ -346,6 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { return }
         driver = d
         for it in driverItems { it.state = (it === sender) ? .on : .off }
+        updateSpeedStatusItem()
         tick()
     }
 
@@ -355,6 +510,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         catColor = c
         for it in catColorItems { it.state = (it === sender) ? .on : .off }
         rebuildArtwork()
+    }
+
+    @objc private func selectMeterColor(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let c = MeterColor(rawValue: raw)
+        else { return }
+        meterColor = c
+        for it in meterColorItems { it.state = (it === sender) ? .on : .off }
+        if menuOpen {
+            statsView.update(latest, history: cpuHistory, meterColor: c.color)
+        }
     }
 
     @objc private func toggleShowText() {
@@ -372,6 +537,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFlip() {
         flip.toggle()
         flipItem.state = flip ? .on : .off
+        rebuildArtwork()
+    }
+
+    @objc private func toggleThermalCatTint() {
+        thermalCatTint.toggle()
+        thermalCatItem.state = thermalCatTint ? .on : .off
         rebuildArtwork()
     }
 

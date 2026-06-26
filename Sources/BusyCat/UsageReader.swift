@@ -2,6 +2,26 @@ import Foundation
 import IOKit
 import SystemConfiguration
 
+@_silgen_name("IOHIDEventSystemClientCreate")
+private func IOHIDEventSystemClientCreate(_ allocator: CFAllocator?) -> Unmanaged<CFTypeRef>?
+@_silgen_name("IOHIDEventSystemClientSetMatching")
+private func IOHIDEventSystemClientSetMatching(_ client: CFTypeRef, _ matching: CFDictionary)
+@_silgen_name("IOHIDEventSystemClientCopyServices")
+private func IOHIDEventSystemClientCopyServices(_ client: CFTypeRef) -> Unmanaged<CFArray>?
+@_silgen_name("IOHIDServiceClientCopyProperty")
+private func IOHIDServiceClientCopyProperty(_ service: CFTypeRef, _ key: CFString) -> Unmanaged<CFTypeRef>?
+@_silgen_name("IOHIDServiceClientCopyEvent")
+private func IOHIDServiceClientCopyEvent(_ service: CFTypeRef, _ eventType: Int64,
+                                         _ options: Int64, _ timestamp: Int64) -> Unmanaged<CFTypeRef>?
+@_silgen_name("IOHIDEventGetFloatValue")
+private func IOHIDEventGetFloatValue(_ event: CFTypeRef, _ field: Int64) -> Double
+
+struct TemperatureSensor {
+    var name: String
+    var value: Double
+    var source: String
+}
+
 /// One snapshot of everything RunCat-GPU monitors. Formulas mirror Activity
 /// Monitor / RunCat (verified by reverse-engineering RunCat's detail menu).
 struct Metrics {
@@ -35,6 +55,16 @@ struct Metrics {
     var batHealth: Double? = nil // % maximum capacity
     var batCycles: Int? = nil
     var batTemp: Double? = nil   // °C
+    // Thermal (best effort; private-ish sensor names vary by Mac model)
+    var thermalState: Int = ProcessInfo.ThermalState.nominal.rawValue
+    var thermalTemp: Double? = nil // °C, hottest valid SMC/IOHID sensor
+    var thermalTempSensor: String? = nil
+    var thermalCPUTemp: Double? = nil // °C, IOHID pACC/eACC cluster max when available
+    var thermalSensorCount: Int = 0
+    var thermalTopSensors: [TemperatureSensor] = []
+    var cpuSpeedLimit: Int? = nil  // %, from pmset -g therm
+    var cpuSchedulerLimit: Int? = nil
+    var cpuAvailableCPUs: Int? = nil
 }
 
 /// Samples all system metrics. Holds the small bit of state needed to turn the
@@ -70,7 +100,7 @@ final class SystemSampler {
     private var gpuRawEMA = 0.0
     private var gpuRenderEMA = 0.0
     private var gpuEMAPrimed = false
-    // Slow/heavy metrics (disk, network type+IP, battery) refreshed every ~5s
+    // Slow/heavy metrics (disk, network type+IP, battery, thermal) refreshed every ~5s
     // while the menu is open, not every tick — they barely change second-to-second.
     private var slowTick = 0
     private var slowPrimed = false
@@ -78,6 +108,7 @@ final class SystemSampler {
     private var cNet: (type: String, ip: String) = ("—", "—")
     private var cBat: (percent: Double?, charging: Bool, onAC: Bool,
                        health: Double?, cycles: Int?, temp: Double?) = (nil, false, false, nil, nil, nil)
+    private var cThermal = ThermalReader.Snapshot()
 
     deinit { mach_port_deallocate(mach_task_self_, host) }
 
@@ -127,6 +158,7 @@ final class SystemSampler {
             cDisk = disk()
             cNet = networkInfo()
             cBat = battery()
+            cThermal = ThermalReader.snapshot()
             slowPrimed = true
         }
         slowTick &+= 1
@@ -141,6 +173,15 @@ final class SystemSampler {
         m.batHealth = cBat.health
         m.batCycles = cBat.cycles
         m.batTemp = cBat.temp
+        m.thermalState = cThermal.state
+        m.thermalTemp = cThermal.temperature
+        m.thermalTempSensor = cThermal.temperatureSensor
+        m.thermalCPUTemp = cThermal.cpuTemperature
+        m.thermalSensorCount = cThermal.sensorCount
+        m.thermalTopSensors = cThermal.topSensors
+        m.cpuSpeedLimit = cThermal.cpuSpeedLimit
+        m.cpuSchedulerLimit = cThermal.cpuSchedulerLimit
+        m.cpuAvailableCPUs = cThermal.cpuAvailableCPUs
         return m
     }
 
@@ -356,6 +397,300 @@ final class SystemSampler {
             return SCNetworkInterfaceGetLocalizedDisplayName(i) as String?
         }
         return nil
+    }
+}
+
+enum ThermalReader {
+    struct Snapshot {
+        var state: Int = ProcessInfo.ThermalState.nominal.rawValue
+        var temperature: Double? = nil
+        var temperatureSensor: String? = nil
+        var cpuTemperature: Double? = nil
+        var sensorCount: Int = 0
+        var topSensors: [TemperatureSensor] = []
+        var cpuSpeedLimit: Int? = nil
+        var cpuSchedulerLimit: Int? = nil
+        var cpuAvailableCPUs: Int? = nil
+    }
+
+    private static let client: CFTypeRef? = IOHIDEventSystemClientCreate(kCFAllocatorDefault)?
+        .takeRetainedValue()
+
+    static func snapshot() -> Snapshot {
+        var s = Snapshot(state: ProcessInfo.processInfo.thermalState.rawValue)
+        let hid = temperatureSensors()
+        let smc = SMCReader.shared.temperatureSensors()
+        let sensors = (hid + smc).filter { $0.value > 0 && $0.value < 120 }
+        s.sensorCount = sensors.count
+        s.topSensors = sensors.sorted { $0.value > $1.value }.prefix(12).map { $0 }
+        if let hottest = s.topSensors.first {
+            s.temperature = hottest.value
+            s.temperatureSensor = "\(hottest.name) · \(hottest.source)"
+        }
+        let cpu = hid.filter { $0.name.hasPrefix("pACC") || $0.name.hasPrefix("eACC") }
+        s.cpuTemperature = cpu.map(\.value).max()
+
+        let limits = parsePMSetTherm(runPMSetTherm())
+        s.cpuSpeedLimit = limits.speed
+        s.cpuSchedulerLimit = limits.scheduler
+        s.cpuAvailableCPUs = limits.available
+        return s
+    }
+
+    static func parsePMSetTherm(_ output: String)
+        -> (speed: Int?, scheduler: Int?, available: Int?) {
+        var speed: Int?
+        var scheduler: Int?
+        var available: Int?
+        for line in output.replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\t", with: "")
+            .split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2, let value = Int(parts[1]) else { continue }
+            switch parts[0] {
+            case "CPU_Speed_Limit": speed = value
+            case "CPU_Scheduler_Limit": scheduler = value
+            case "CPU_Available_CPUs": available = value
+            default: continue
+            }
+        }
+        return (speed, scheduler, available)
+    }
+
+    private static func runPMSetTherm() -> String {
+        let pipe = Pipe()
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        task.arguments = ["-g", "therm"]
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return ""
+        }
+        guard task.terminationStatus == 0 else { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private static func temperatureSensors() -> [TemperatureSensor] {
+        guard let client else { return [] }
+        let matching: CFDictionary = [
+            "PrimaryUsagePage" as CFString: 0xFF00 as CFNumber,
+            "PrimaryUsage" as CFString: 0x05 as CFNumber,
+        ] as CFDictionary
+        IOHIDEventSystemClientSetMatching(client, matching)
+        guard let services = IOHIDEventSystemClientCopyServices(client)?.takeRetainedValue() as? [CFTypeRef]
+        else { return [] }
+
+        var values: [String: Double] = [:]
+        for service in services {
+            guard let event = IOHIDServiceClientCopyEvent(service, 0x0F, 0, 0)?.takeRetainedValue()
+            else { continue }
+            let temp = IOHIDEventGetFloatValue(event, 0x0F << 16)
+            guard temp > 0, temp < 120 else { continue }
+            let name = sensorName(for: service) ?? "Unknown"
+            values[name] = temp
+        }
+        return values.map { TemperatureSensor(name: $0.key, value: $0.value, source: "IOHID") }
+    }
+
+    private static func sensorName(for service: CFTypeRef) -> String? {
+        if let product = IOHIDServiceClientCopyProperty(service, "Product" as CFString)?
+            .takeRetainedValue() as? String {
+            return product
+        }
+        if let location = IOHIDServiceClientCopyProperty(service, "LocationID" as CFString)?
+            .takeRetainedValue() as? NSNumber {
+            return String(format: "Unknown-FF00-05-%llX", location.uint64Value)
+        }
+        return nil
+    }
+}
+
+private final class SMCReader {
+    static let shared = SMCReader()
+
+    private struct SMCVersion {
+        var major: UInt8 = 0
+        var minor: UInt8 = 0
+        var build: UInt8 = 0
+        var reserved: UInt8 = 0
+        var release: UInt16 = 0
+    }
+
+    private struct SMCPLimitData {
+        var version: UInt16 = 0
+        var length: UInt16 = 0
+        var cpuPLimit: UInt32 = 0
+        var gpuPLimit: UInt32 = 0
+        var memPLimit: UInt32 = 0
+    }
+
+    private struct SMCKeyInfoData {
+        var dataSize: UInt32 = 0
+        var dataType: UInt32 = 0
+        var dataAttributes: UInt8 = 0
+        var padding0: UInt8 = 0
+        var padding1: UInt8 = 0
+        var padding2: UInt8 = 0
+    }
+
+    private struct SMCParamStruct {
+        var key: UInt32 = 0
+        var vers = SMCVersion()
+        var pLimitData = SMCPLimitData()
+        var keyInfo = SMCKeyInfoData()
+        var result: UInt8 = 0
+        var status: UInt8 = 0
+        var data8: UInt8 = 0
+        var data32: UInt32 = 0
+        var bytes: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                    UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                    UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                    UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    }
+
+    private let kSMCUserClientOpen: UInt32 = 0
+    private let kSMCUserClientClose: UInt32 = 1
+    private let kSMCHandleYPCEvent: UInt32 = 2
+    private let kSMCReadKey: UInt8 = 5
+    private let kSMCGetKeyFromIndex: UInt8 = 8
+    private let kSMCGetKeyInfo: UInt8 = 9
+    private let kSMCSuccess: UInt8 = 0
+    private let keyCountKey = SMCReader.fourCC("#KEY")
+
+    private var connection: io_connect_t = 0
+    private var keys: [UInt32] = []
+    private var keyInfoCache: [UInt32: SMCKeyInfoData] = [:]
+
+    private init() {
+        open()
+    }
+
+    deinit {
+        if connection != 0 { IOServiceClose(connection) }
+    }
+
+    func temperatureSensors() -> [TemperatureSensor] {
+        guard connection != 0 else { return [] }
+        if keys.isEmpty { keys = readKeys() }
+        return keys.compactMap { key -> TemperatureSensor? in
+            guard key >> 24 == 84, let sample = readKey(key),
+                  let value = decodeTemperature(sample.data, type: sample.type),
+                  value > 0, value < 120
+            else { return nil }
+            return TemperatureSensor(name: SMCReader.fourCCString(key), value: value, source: "SMC")
+        }
+    }
+
+    private func open() {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
+        guard service != 0 else { return }
+        defer { IOObjectRelease(service) }
+        var conn: io_connect_t = 0
+        guard IOServiceOpen(service, mach_task_self_, 0, &conn) == kIOReturnSuccess else { return }
+        connection = conn
+    }
+
+    private func readKeys() -> [UInt32] {
+        let count = readKeyCount()
+        guard count > 0 else { return [] }
+        var out: [UInt32] = []
+        for i in 0..<count {
+            if let key = readKey(at: i), key != 0 { out.append(key) }
+        }
+        return out
+    }
+
+    private func readKeyCount() -> UInt32 {
+        guard let sample = readKey(keyCountKey), sample.data.count <= 4 else { return 0 }
+        var n: UInt32 = 0
+        for (i, b) in sample.data.enumerated() {
+            n |= UInt32(b) << UInt32(i * 8)
+        }
+        return n
+    }
+
+    private func readKey(at index: UInt32) -> UInt32? {
+        var input = SMCParamStruct()
+        var output = SMCParamStruct()
+        input.data8 = kSMCGetKeyFromIndex
+        input.data32 = index
+        guard call(function: kSMCHandleYPCEvent, input: &input, output: &output),
+              output.result == kSMCSuccess else { return nil }
+        return output.key
+    }
+
+    private func readKey(_ key: UInt32) -> (data: [UInt8], type: UInt32)? {
+        guard let info = keyInfo(for: key) else { return nil }
+        var input = SMCParamStruct()
+        var output = SMCParamStruct()
+        input.key = key
+        input.data8 = kSMCReadKey
+        input.keyInfo.dataSize = info.dataSize
+        guard call(function: kSMCHandleYPCEvent, input: &input, output: &output),
+              output.result == kSMCSuccess else { return nil }
+        let size = min(Int(info.dataSize), 32)
+        let raw = withUnsafeBytes(of: output.bytes) { Array($0.prefix(size)) }
+        return (Array(raw.reversed()), info.dataType)
+    }
+
+    private func keyInfo(for key: UInt32) -> SMCKeyInfoData? {
+        if let cached = keyInfoCache[key] { return cached }
+        var input = SMCParamStruct()
+        var output = SMCParamStruct()
+        input.key = key
+        input.data8 = kSMCGetKeyInfo
+        guard call(function: kSMCHandleYPCEvent, input: &input, output: &output),
+              output.result == kSMCSuccess else { return nil }
+        keyInfoCache[key] = output.keyInfo
+        return output.keyInfo
+    }
+
+    private func call(function: UInt32, input: inout SMCParamStruct, output: inout SMCParamStruct) -> Bool {
+        guard connection != 0 else { return false }
+        let inputSize = MemoryLayout<SMCParamStruct>.stride
+        var outputSize = MemoryLayout<SMCParamStruct>.stride
+        guard IOConnectCallMethod(connection, kSMCUserClientOpen, nil, 0, nil, 0,
+                                  nil, nil, nil, nil) == kIOReturnSuccess
+        else { return false }
+        let result = IOConnectCallStructMethod(connection, function, &input, inputSize, &output, &outputSize)
+        IOConnectCallMethod(connection, kSMCUserClientClose, nil, 0, nil, 0, nil, nil, nil, nil)
+        return result == kIOReturnSuccess
+    }
+
+    private func decodeTemperature(_ data: [UInt8], type: UInt32) -> Double? {
+        let typeName = SMCReader.fourCCString(type)
+        switch typeName {
+        case "sp78":
+            guard data.count == 2 else { return nil }
+            return Double(data[1] & 0x7F) + Double(data[0]) / 256.0
+        case "flt ":
+            guard data.count == 4 else { return nil }
+            let bits = data.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            return Double(Float32(bitPattern: bits))
+        default:
+            return nil
+        }
+    }
+
+    private static func fourCC(_ string: String) -> UInt32 {
+        string.utf8.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+    }
+
+    private static func fourCCString(_ value: UInt32) -> String {
+        let bytes = [
+            UInt8((value >> 24) & 0xFF),
+            UInt8((value >> 16) & 0xFF),
+            UInt8((value >> 8) & 0xFF),
+            UInt8(value & 0xFF),
+        ]
+        return String(bytes: bytes, encoding: .ascii) ?? "????"
     }
 }
 
