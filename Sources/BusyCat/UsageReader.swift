@@ -100,9 +100,10 @@ final class SystemSampler {
     private var gpuRawEMA = 0.0
     private var gpuRenderEMA = 0.0
     private var gpuEMAPrimed = false
-    // Slow/heavy metrics (disk, network type+IP, battery, thermal) refreshed every ~5s
-    // while the menu is open, not every tick — they barely change second-to-second.
-    private var slowTick = 0
+    // Slow/heavy metrics (disk, network type+IP, battery, thermal) refreshed by
+    // wall time while the menu is open — they barely change second-to-second.
+    private let slowRefreshInterval = 5.0
+    private var nextSlowRefresh = 0.0
     private var slowPrimed = false
     private var cDisk: (percent: Double, used: Double, total: Double) = (0, 0, 0)
     private var cNet: (type: String, ip: String) = ("—", "—")
@@ -154,14 +155,15 @@ final class SystemSampler {
         m.netUp = net.up
         // …but the heavy, slow-changing reads (disk volume query, SCNetworkInterface
         // lookup, full battery property dict) only every ~5s.
-        if !slowPrimed || slowTick % 5 == 0 {
+        let now = ProcessInfo.processInfo.systemUptime
+        if !slowPrimed || now >= nextSlowRefresh {
             cDisk = disk()
             cNet = networkInfo()
             cBat = battery()
             cThermal = ThermalReader.snapshot()
             slowPrimed = true
+            nextSlowRefresh = now + slowRefreshInterval
         }
-        slowTick &+= 1
         m.disk = cDisk.percent
         m.diskUsed = cDisk.used
         m.diskTotal = cDisk.total
@@ -415,6 +417,8 @@ enum ThermalReader {
 
     private static let client: CFTypeRef? = IOHIDEventSystemClientCreate(kCFAllocatorDefault)?
         .takeRetainedValue()
+    private static var cachedPMSetTherm = ""
+    private static var nextPMSetRefresh = 0.0
 
     static func snapshot() -> Snapshot {
         var s = Snapshot(state: ProcessInfo.processInfo.thermalState.rawValue)
@@ -430,7 +434,7 @@ enum ThermalReader {
         let cpu = hid.filter { $0.name.hasPrefix("pACC") || $0.name.hasPrefix("eACC") }
         s.cpuTemperature = cpu.map(\.value).max()
 
-        let limits = parsePMSetTherm(runPMSetTherm())
+        let limits = parsePMSetTherm(cachedPMSetOutput())
         s.cpuSpeedLimit = limits.speed
         s.cpuSchedulerLimit = limits.scheduler
         s.cpuAvailableCPUs = limits.available
@@ -473,6 +477,16 @@ enum ThermalReader {
         guard task.terminationStatus == 0 else { return "" }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private static func cachedPMSetOutput() -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard cachedPMSetTherm.isEmpty || now >= nextPMSetRefresh else {
+            return cachedPMSetTherm
+        }
+        cachedPMSetTherm = runPMSetTherm()
+        nextPMSetRefresh = now + 30
+        return cachedPMSetTherm
     }
 
     private static func temperatureSensors() -> [TemperatureSensor] {
@@ -566,6 +580,7 @@ private final class SMCReader {
 
     private var connection: io_connect_t = 0
     private var keys: [UInt32] = []
+    private var temperatureKeys: [UInt32] = []
     private var keyInfoCache: [UInt32: SMCKeyInfoData] = [:]
 
     private init() {
@@ -578,9 +593,12 @@ private final class SMCReader {
 
     func temperatureSensors() -> [TemperatureSensor] {
         guard connection != 0 else { return [] }
-        if keys.isEmpty { keys = readKeys() }
-        return keys.compactMap { key -> TemperatureSensor? in
-            guard key >> 24 == 84, let sample = readKey(key),
+        if temperatureKeys.isEmpty {
+            if keys.isEmpty { keys = readKeys() }
+            temperatureKeys = keys.filter { $0 >> 24 == 84 }
+        }
+        return temperatureKeys.compactMap { key -> TemperatureSensor? in
+            guard let sample = readKey(key),
                   let value = decodeTemperature(sample.data, type: sample.type),
                   value > 0, value < 120
             else { return nil }

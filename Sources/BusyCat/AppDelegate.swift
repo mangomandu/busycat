@@ -141,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var speedStatusItem: NSMenuItem!
     private var thermalParentItem: NSMenuItem!
     private let thermalMenu = NSMenu()
+    private var thermalMenuSignature = ""
     private var availableUpdate: String?
     private let menu = NSMenu()
 
@@ -158,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerSleepWake()
         rebuildArtwork()
         layout()
-        _ = sampler.sampleAll()
+        _ = sampler.sampleLight()
         startAnimation(interval: currentInterval)
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
         timer.tolerance = 0.2
@@ -443,6 +444,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateThermalMenu(_ m: Metrics) {
+        let signature = thermalMenuSignature(for: m)
+        guard signature != thermalMenuSignature else { return }
+        thermalMenuSignature = signature
+
         thermalMenu.removeAllItems()
         addThermalInfo("최고 센서", temp(m.thermalTemp))
         addThermalInfo("열 압박", thermalState(m.thermalState))
@@ -472,6 +477,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 thermalMenu.addItem(item)
             }
         }
+    }
+
+    private func thermalMenuSignature(for m: Metrics) -> String {
+        var parts: [String] = []
+        parts.append(temp(m.thermalTemp))
+        parts.append(String(m.thermalState))
+        parts.append(temp(m.thermalCPUTemp))
+        parts.append(temp(m.batTemp))
+        parts.append(m.cpuSpeedLimit.map(String.init) ?? "")
+        parts.append(m.cpuSchedulerLimit.map(String.init) ?? "")
+        parts.append(m.cpuAvailableCPUs.map(String.init) ?? "")
+        parts.append(String(m.thermalSensorCount))
+        parts += m.thermalTopSensors.map { "\($0.name):\($0.source):\(String(format: "%.1f", $0.value))" }
+        return parts.joined(separator: "|")
     }
 
     private func addThermalInfo(_ label: String, _ value: String) {
@@ -655,7 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func onWake() {
         asleep = false
-        _ = sampler.sampleAll()
+        _ = sampler.sampleLight()
         startAnimation(interval: currentInterval)
     }
 }

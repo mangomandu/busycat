@@ -141,7 +141,8 @@ final class StatsView: NSView {
         let h = padTop + padBottom
             + secs.map(sectionHeight).reduce(0, +)
             + CGFloat(max(0, secs.count - 1)) * sectionGap
-        setFrameSize(NSSize(width: panelWidth, height: h))
+        let size = NSSize(width: panelWidth, height: h)
+        if frame.size != size { setFrameSize(size) }
     }
 
     override var intrinsicContentSize: NSSize { frame.size }
