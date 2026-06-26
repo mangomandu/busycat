@@ -33,7 +33,8 @@ App Store, so it can read the GPU via IOKit without `sudo`.
   `pmset` speed limits, and top temperature sensors are shown separately.
 - Choose the menu-bar text: hidden, cat-speed %, CPU %, GPU %, memory %,
   temperature, or thermal pressure.
-- Optional small **RAM fish pile** next to the cat when memory pressure rises.
+- Optional small **memory-pressure fish pile** next to the cat when memory
+  pressure rises.
 - Invert speed (busier = slower), flip the cat's direction, choose cat color
   (auto contrast / white / black). Optionally add a red outline to the cat when
   thermal pressure is above nominal.
@@ -41,7 +42,7 @@ App Store, so it can read the GPU via IOKit without `sudo`.
   to drive the cat, keeping idle CPU low.
 - No Dock icon (`LSUIElement`). Settings persist (`UserDefaults`).
 
-<p align="center"><img src="docs/panel.png" width="300" alt="BusyCat detailed stats panel"></p>
+<p align="center"><img src="docs/panel-en.png" width="300" alt="BusyCat detailed stats panel"></p>
 
 ## Menu Layout
 
