@@ -102,6 +102,16 @@ For regular users:
 Release page:
 [github.com/mangomandu/busycat/releases/latest](https://github.com/mangomandu/busycat/releases/latest)
 
+Homebrew is available for terminal-friendly users:
+
+```bash
+brew tap mangomandu/busycat https://github.com/mangomandu/busycat
+brew install --cask busycat
+```
+
+BusyCat is not notarized yet. On first launch, macOS may block it; if that
+happens, open System Settings → Privacy & Security and choose **Open Anyway**.
+
 ## Build & package
 
 Requires the macOS Swift toolchain (Xcode Command Line Tools). No other
