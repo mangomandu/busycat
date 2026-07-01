@@ -2,7 +2,8 @@ import Foundation
 
 /// Lightweight update check: ask the GitHub Releases API for the latest tag and
 /// compare it to the running version. No signing, no Sparkle framework — just a
-/// hint in the menu. Distribution stays manual (`git pull && make_app.sh`).
+/// hint in the menu. Distribution stays manual: download the DMG or rebuild from
+/// source.
 enum Updater {
     enum CheckResult: Equatable {
         case updateAvailable(String)

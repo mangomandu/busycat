@@ -84,7 +84,12 @@ distributed build ships only with the licensed running-cat art and the
 hand-drawn memory fish gauge for now. If you're the rights holder and object,
 open an issue and it'll be removed.
 
-## Build & install
+## Install
+
+For regular users, download `BusyCat-...-macOS.dmg`, open it, then drag
+`BusyCat.app` to `Applications`.
+
+## Build & package
 
 Requires the macOS Swift toolchain (Xcode Command Line Tools). No other
 dependencies.
@@ -92,6 +97,7 @@ dependencies.
 ```bash
 ./make_app.sh            # build BusyCat.app (ad-hoc signed)
 ./make_app.sh --install  # build + copy to /Applications + relaunch
+./make_dmg.sh            # build BusyCat-...-macOS.dmg
 ```
 
 Quit from the cat's menu → **Quit BusyCat** (⌘Q). To launch at login, add
@@ -101,8 +107,10 @@ Quit from the cat's menu → **Quit BusyCat** (⌘Q). To launch at login, add
 
 BusyCat checks GitHub Releases once a day; when a newer version is published it
 shows **🆕 Get v...** in its menu (or click **Check for Updates** any time). It only
-*notifies* — there's no Sparkle/auto-install (it's an ad-hoc-signed app) — so you
-update by pulling and rebuilding:
+*notifies* — there's no Sparkle/auto-install — so you update by downloading the
+new DMG and replacing the app in `Applications`.
+
+If you build from source:
 
 ```bash
 git pull

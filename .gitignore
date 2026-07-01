@@ -1,4 +1,6 @@
 .build/
 BusyCat.app/
+*.dmg
+*.zip
 *.swiftpm
 .DS_Store
