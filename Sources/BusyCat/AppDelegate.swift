@@ -4,11 +4,9 @@
  Rendering: cat in a CALayer; the runner timer swaps spriteLayer.contents (no
  button.image → no macOS 26 menu-bar background recomposite → ~0.3% CPU).
 
- Colour: CALayer contents can't auto-invert like a template image, and no
- light/dark API reliably reports a *dark menu bar under Light Mode* (dark
- wallpaper). So we tint manually and expose a "고양이 색" override
- (자동/흰색/검정): 자동 follows the system Dark/Light mode, and the manual
- choices are a bulletproof escape when 자동 guesses wrong.
+ Colour: CALayer contents can't auto-invert like a template image, so we tint
+ manually and expose a "고양이 색" override (자동/흰색/검정). 자동 resolves the
+ status-bar button's label color first, then falls back to system appearance.
 
  Speed follows RunCat's curve at half the frame rate; CPU% uses the same model.
  Heavy metrics (disk/net/battery) are sampled only while the menu is open.
@@ -171,6 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tintedFrames: [CGImage] = []
     private var lastTintKey = ""
     private var lastFishLevel = -1
+    private var cachedAutomaticCatColor = NSColor.white
+    private var lastAutomaticColorCheck = Date.distantPast
+    private let automaticColorCheckInterval: TimeInterval = 3
 
     private var index = 0
     private var runnerTimer: Timer?
@@ -316,9 +317,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch catColor {
         case .white: return .white
         case .black: return .black
-        case .auto:
-            return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .white : .black
+        case .auto: return automaticCatColor()
         }
+    }
+
+    private func automaticCatColor() -> NSColor {
+        let now = Date()
+        if now.timeIntervalSince(lastAutomaticColorCheck) < automaticColorCheckInterval {
+            return cachedAutomaticCatColor
+        }
+        lastAutomaticColorCheck = now
+
+        let appearance = statusItem.button?.effectiveAppearance ?? container.effectiveAppearance
+        var resolvedLabelColor: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            resolvedLabelColor = NSColor.labelColor.usingColorSpace(.deviceRGB)
+        }
+        if let resolved = resolvedLabelColor {
+            cachedAutomaticCatColor = highContrastCatColor(forLabelColor: resolved)
+            return cachedAutomaticCatColor
+        }
+        let match = appearance.bestMatch(from: [.aqua, .darkAqua, .vibrantLight, .vibrantDark])
+        cachedAutomaticCatColor = (match == .darkAqua || match == .vibrantDark) ? .white : .black
+        return cachedAutomaticCatColor
+    }
+
+    private func highContrastCatColor(forLabelColor color: NSColor) -> NSColor {
+        guard let c = color.usingColorSpace(.deviceRGB) else { return .white }
+        let luminance = 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+        return luminance >= 0.5 ? .white : .black
     }
 
     private func thermalOutlineActive() -> Bool {
@@ -335,11 +362,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .white: return prefix + "white"
         case .black: return prefix + "black"
         case .auto:
-            let suffix = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? "auto-white"
-                : "auto-black"
-            return prefix + suffix
+            return prefix + "auto-\(colorKey(automaticCatColor()))"
         }
+    }
+
+    private func colorKey(_ color: NSColor) -> String {
+        guard let c = color.usingColorSpace(.deviceRGB) else { return "unknown" }
+        return String(format: "%.3f-%.3f-%.3f-%.3f",
+                      c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent)
     }
 
     private func rebuildArtwork() {
