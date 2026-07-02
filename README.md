@@ -112,6 +112,18 @@ brew install --cask busycat
 BusyCat is not notarized yet. On first launch, macOS may block it; if that
 happens, open System Settings → Privacy & Security and choose **Open Anyway**.
 
+Developers and terminal-friendly users can also build BusyCat from source. Since
+the app is built locally on your Mac instead of being opened as a downloaded app,
+this can avoid the macOS security warning attached to unsigned downloads.
+
+```bash
+git clone https://github.com/mangomandu/busycat.git
+cd busycat
+./make_app.sh --install
+```
+
+This requires Xcode Command Line Tools.
+
 ## Build & package
 
 Requires the macOS Swift toolchain (Xcode Command Line Tools). No other
