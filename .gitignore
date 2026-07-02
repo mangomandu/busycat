@@ -4,3 +4,4 @@ BusyCat.app/
 *.zip
 *.swiftpm
 .DS_Store
+docs/social-thumbnail-*.png
