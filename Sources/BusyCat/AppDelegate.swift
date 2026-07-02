@@ -479,6 +479,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let color = baseCatColor().withAlphaComponent(0.72).cgColor
         let fishH: CGFloat = 3
         let gap: CGFloat = 0.4
+        if level <= 0 {
+            let y = (barHeight - fishH) / 2
+            let emptyColor = baseCatColor().withAlphaComponent(0.22).cgColor
+            drawFish(ctx, x: 1, y: y, w: wPt - 2, h: fishH, color: emptyColor, flip: true)
+            return ctx.makeImage()
+        }
         let pileH = CGFloat(level) * fishH + CGFloat(max(0, level - 1)) * gap
         let startY = (barHeight - pileH) / 2
         for i in 0..<level {
