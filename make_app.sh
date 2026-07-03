@@ -13,7 +13,9 @@ cp "Info.plist" "$APP/Contents/Info.plist"
 cp "assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc sign so macOS is happy launching it locally.
-codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+if ! codesign --force --sign - "$APP" >/dev/null 2>&1; then
+    echo "Warning: ad-hoc codesign failed; built app may trigger extra macOS launch warnings." >&2
+fi
 echo "Built $APP"
 
 # `./make_app.sh --install` (or -i): update the /Applications copy and relaunch.

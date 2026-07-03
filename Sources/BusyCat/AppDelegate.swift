@@ -199,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { defaults.set(newValue.rawValue, forKey: "driver") }
     }
     private var catColor: CatColor {
-        get { CatColor(rawValue: defaults.string(forKey: "catColor") ?? "") ?? .white }
+        get { CatColor(rawValue: defaults.string(forKey: "catColor") ?? "") ?? .auto }
         set { defaults.set(newValue.rawValue, forKey: "catColor") }
     }
     private var meterColor: MeterColor {

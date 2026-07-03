@@ -15,8 +15,8 @@ cask "busycat" do
   app "BusyCat.app"
 
   zap trash: [
-    "~/Library/Preferences/com.mangomandu.BusyCat.plist",
-    "~/Library/Saved Application State/com.mangomandu.BusyCat.savedState",
+    "~/Library/Preferences/com.dlfnek.busycat.plist",
+    "~/Library/Saved Application State/com.dlfnek.busycat.savedState",
   ]
 
   caveats <<~EOS
