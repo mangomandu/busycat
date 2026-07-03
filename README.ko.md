@@ -10,7 +10,7 @@
 🇺🇸 [English README](README.md)
 
 <p align="center">
-  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.1-macOS.dmg"><strong>macOS용 다운로드 (.dmg)</strong></a>
+  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.2-macOS.dmg"><strong>macOS용 다운로드 (.dmg)</strong></a>
   <br>
   <sub>DMG를 열고 <code>BusyCat.app</code>을 <code>Applications</code>로 드래그하세요. 변경 내용은 <a href="https://github.com/mangomandu/busycat/releases/latest">GitHub Releases</a>에서 볼 수 있습니다.</sub>
 </p>
@@ -91,7 +91,7 @@ RunCat이 GPU를 못 넣는 건 **앱스토어 = 샌드박스** 앱이라 GPU·�
 일반 사용자는 DMG만 받으면 됩니다.
 
 1. 최신 DMG 다운로드:
-   [BusyCat-1.1.1-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.1-macOS.dmg)
+   [BusyCat-1.1.2-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.2-macOS.dmg)
 2. DMG 열기
 3. `BusyCat.app`을 `Applications`로 드래그
 
