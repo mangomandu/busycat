@@ -74,7 +74,7 @@ Fresh installs start quiet and conservative:
 - Speed source: busiest of CPU/GPU
 - Menu-bar text: hidden
 - Memory pressure fish: off
-- Cat color: auto (menu-bar contrast)
+- Cat color: auto (match menu bar)
 - Graph/bar color: graphite
 - Speed invert: off
 - Flip direction: off

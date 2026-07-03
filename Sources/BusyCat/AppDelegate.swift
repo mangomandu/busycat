@@ -78,7 +78,7 @@ enum CatColor: String, CaseIterable {
     case auto, white, black
     var label: String {
         switch self {
-        case .auto: return appText("자동 (메뉴바 대비)", "Auto (menu-bar contrast)")
+        case .auto: return appText("자동 (메뉴바에 맞춤)", "Auto (match menu bar)")
         case .white: return appText("흰색", "White")
         case .black: return appText("검정", "Black")
         }
