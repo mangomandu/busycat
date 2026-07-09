@@ -10,7 +10,7 @@ rendering) makes the cat run too.
 🇰🇷 [한국어 README](README.ko.md)
 
 <p align="center">
-  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.2-macOS.dmg"><strong>Download for macOS (.dmg)</strong></a>
+  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.3-macOS.dmg"><strong>Download for macOS (.dmg)</strong></a>
   <br>
   <sub>Open the DMG, then drag <code>BusyCat.app</code> to <code>Applications</code>. See <a href="https://github.com/mangomandu/busycat/releases/latest">GitHub Releases</a> for release notes.</sub>
 </p>
@@ -95,7 +95,7 @@ open an issue and it'll be removed.
 For regular users:
 
 1. Download the latest DMG:
-   [BusyCat-1.1.2-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.2-macOS.dmg)
+   [BusyCat-1.1.3-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.3-macOS.dmg)
 2. Open the DMG.
 3. Drag `BusyCat.app` to `Applications`.
 
