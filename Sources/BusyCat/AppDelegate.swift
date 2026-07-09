@@ -296,8 +296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         spriteLayer.contentsGravity = .resizeAspect
         spriteLayer.contentsScale = scale
-        spriteLayer.magnificationFilter = .nearest
-        spriteLayer.minificationFilter = .nearest
+        spriteLayer.magnificationFilter = .linear
+        spriteLayer.minificationFilter = .linear
         // Sprite frames must switch immediately. Prevent Core Animation from
         // creating an implicit contents animation for every timer tick.
         spriteLayer.actions = ["contents": NSNull()]
@@ -411,7 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rep.size = image.size
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        NSGraphicsContext.current?.imageInterpolation = .none
+        NSGraphicsContext.current?.imageInterpolation = .high
         let rect = NSRect(origin: .zero, size: image.size)
         image.draw(in: rect)
         color.set()
@@ -438,7 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rep.size = image.size
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        NSGraphicsContext.current?.imageInterpolation = .none
+        NSGraphicsContext.current?.imageInterpolation = .high
         let rect = NSRect(origin: .zero, size: image.size)
         let outlinePx = 1 / scale
         for offset in [

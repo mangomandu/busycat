@@ -19,7 +19,7 @@ enum CatFrames {
 
     private static func mirror(_ img: NSImage, size: NSSize) -> NSImage {
         let out = NSImage(size: size, flipped: false) { rect in
-            NSGraphicsContext.current?.imageInterpolation = .none
+            NSGraphicsContext.current?.imageInterpolation = .high
             let t = NSAffineTransform()
             t.translateX(by: rect.width, yBy: 0)
             t.scaleX(by: -1, yBy: 1)
