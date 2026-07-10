@@ -21,9 +21,16 @@ echo "Built $APP"
 # `./make_app.sh --install` (or -i): update the /Applications copy and relaunch.
 if [ "${1:-}" = "--install" ] || [ "${1:-}" = "-i" ]; then
     killall BusyCat 2>/dev/null || true
-    sleep 1
+    for _ in {1..20}; do
+        pgrep -x BusyCat >/dev/null 2>&1 || break
+        sleep 0.1
+    done
+    if pgrep -x BusyCat >/dev/null 2>&1; then
+        echo "BusyCat did not quit; refusing to replace a running app." >&2
+        exit 1
+    fi
     rm -rf "/Applications/$APP"
-    cp -R "$APP" /Applications/
+    ditto "$APP" "/Applications/$APP"
     open "/Applications/$APP"
     echo "Installed to /Applications/$APP and relaunched."
 else

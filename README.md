@@ -4,13 +4,13 @@
 
 A macOS menu-bar app like [RunCat](https://github.com/Kyome22/menubar_runcat) — a
 running cat whose speed reflects how busy your Mac is. Unlike RunCat, **BusyCat
-watches the GPU as well as the CPU**, so heavy GPU work (ML training, embeddings,
-rendering) makes the cat run too.
+watches GPU compute as well as the CPU**, so heavy GPU work such as ML training
+and embeddings makes the cat run too.
 
 🇰🇷 [한국어 README](README.ko.md)
 
 <p align="center">
-  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.3-macOS.dmg"><strong>Download for macOS (.dmg)</strong></a>
+  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.3-macOS.dmg"><strong>Download for Apple Silicon Mac (.dmg)</strong></a>
   <br>
   <sub>Open the DMG, then drag <code>BusyCat.app</code> to <code>Applications</code>. See <a href="https://github.com/mangomandu/busycat/releases/latest">GitHub Releases</a> for release notes.</sub>
 </p>
@@ -21,7 +21,8 @@ rendering) makes the cat run too.
 
 RunCat only watches the CPU, so GPU-bound work — for example running ML
 embeddings on Apple Silicon — leaves the cat looking idle. BusyCat drives the cat
-from **`max(CPU, GPU)`**: whatever is busiest.
+from **`max(CPU, GPU compute)`**: whatever is busiest. The GPU value excludes
+screen compositing and represents estimated compute load.
 
 RunCat can't add GPU support because it's a sandboxed App Store app (no GPU or
 thermal access — the developer says so in the FAQ). BusyCat ships *outside* the
@@ -30,17 +31,17 @@ App Store, so it can read the GPU via IOKit without `sudo`.
 ## Features
 
 - Running cat in the menu bar, speed ∝ system load.
-- Watches **CPU and GPU**. Pick what drives the speed: busiest (CPU·GPU), CPU
-  only, GPU only, or memory.
+- Watches **CPU and GPU compute**. Pick what drives the speed: busiest
+  (CPU·GPU compute), CPU only, GPU compute only, or memory.
 - **Detailed live panel** (click the cat): CPU, GPU, memory, disk, thermal state,
   network, battery — each mapped to Activity Monitor's own definitions where
   macOS exposes a comparable value.
 - **Temperature details on hover**: hottest sensor, macOS thermal pressure,
   `pmset` speed limits, and top temperature sensors are shown separately.
-- Choose the menu-bar text: hidden, cat-speed %, CPU %, GPU %, memory %,
+- Choose the menu-bar text: hidden, cat-speed %, CPU %, GPU compute %, memory %,
   temperature, or thermal pressure.
-- Optional small **memory-pressure fish pile** next to the cat when memory
-  pressure rises.
+- Optional **memory-pressure fish pile** driven by macOS' real
+  normal/warning/critical pressure state.
 - Invert speed (busier = slower), flip the cat's direction, choose cat color
   (auto contrast / white / black). Optionally add a red outline to the cat when
   thermal pressure is above nominal.
@@ -59,7 +60,8 @@ Click the cat to open the menu. Items are ordered like this:
 3. Settings
 4. Open Activity Monitor
 5. Check for updates
-6. Quit BusyCat
+6. About BusyCat
+7. Quit BusyCat
 
 Use `Settings` to choose language, menu-bar display, speed behavior, design, and
 launch at login in one place. Hover the thermal row in the stats panel to see
@@ -93,6 +95,9 @@ open an issue and it'll be removed.
 ## Install
 
 For regular users:
+
+The current build requires an **Apple Silicon Mac (M1 or newer) running macOS 13
+Ventura or later**. Intel Macs are not supported.
 
 1. Download the latest DMG:
    [BusyCat-1.1.3-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.3-macOS.dmg)
@@ -135,8 +140,8 @@ dependencies.
 ./make_dmg.sh            # build BusyCat-...-macOS.dmg
 ```
 
-Quit from the cat's menu → **Quit BusyCat** (⌘Q). To launch at login, add
-`BusyCat.app` under System Settings → General → Login Items.
+Quit from the cat's menu → **Quit BusyCat** (⌘Q). Enable launch at login under
+**BusyCat Settings → System → Launch at login**.
 
 ## Updating
 
@@ -154,7 +159,7 @@ git pull
 
 ## How it works
 
-- **GPU** (Apple Silicon, no `sudo`): IOKit `IOAccelerator` →
+- **GPU compute** (Apple Silicon, no `sudo`): IOKit `IOAccelerator` →
   `PerformanceStatistics`. Compute load = `Device Utilization %` − `Renderer
   Utilization %`, which isolates real compute (Metal/MPS) from
   graphics/compositing — this is what climbs during ML work, cross-checked
@@ -162,20 +167,24 @@ git pull
 - **CPU**: `host_statistics` `HOST_CPU_LOAD_INFO` tick deltas, EMA-smoothed so it
   tracks Activity Monitor's feel.
 - **Memory / disk / network / battery / thermal state**: `vm_statistics64`,
-  volume capacity, `getifaddrs` byte deltas, IOKit `AppleSmartBattery`,
+  volume capacity, `NET_RT_IFLIST2` 64-bit byte deltas, IOKit `AppleSmartBattery`,
   `ProcessInfo.thermalState`, IOHID/AppleSMC temperature sensors, and
   `pmset -g therm` where available.
+- **Memory pressure**: the public Dispatch memory-pressure source provides the
+  real normal/warning/critical state; BusyCat does not invent a percentage from
+  unrelated VM counters.
 - **Temperature vs thermal pressure**: the temperature shown in the menu is the
   hottest valid SMC/IOHID sensor. Thermal pressure is macOS' own
   `nominal / fair / serious / critical` state, which also reflects power,
   scheduling, and throttling headroom. A Mac can report 60-100°C while still
   being nominal, or throttle before a single sensor looks alarming.
-- **Sampling optimization**: when the menu is closed, BusyCat reads only the
-  CPU/GPU/memory values needed to drive the cat. Disk, network identity, battery,
-  full temperature sensors, and `pmset` are sampled only while the menu is open;
-  slow-changing values are cached for about 5 seconds, and `pmset -g therm` is
+- **Sampling optimization**: BusyCat warms the first detailed snapshot on a
+  background queue after launch. While the menu is closed it then reads only the
+  CPU/GPU-compute/memory values needed to drive the cat. Detailed sensors refresh
+  while the menu is open; slow-changing values are cached for about 5 seconds,
+  and `pmset -g therm` is
   cached for about 30 seconds.
-- **Accuracy caveats**: GPU load is a best-effort interpretation of Apple
+- **Accuracy caveats**: GPU compute load is a best-effort interpretation of Apple
   Silicon IOKit counters, and temperature sensor names are model-specific rather
   than stable public API. BusyCat therefore shows temperature as the hottest
   valid sensor it can read, while macOS thermal pressure remains the primary

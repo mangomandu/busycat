@@ -34,6 +34,7 @@ struct BusyCatTests {
         #expect(abs(SpeedCurve.interval(forUsage: 0) - 0.4) < 0.0001)
         #expect(abs(SpeedCurve.interval(forUsage: 100) - 0.02) < 0.0001)
         #expect(abs(SpeedCurve.interval(forUsage: 500) - 0.02) < 0.0001)
+        #expect(abs(SpeedCurve.interval(forUsage: 100, maximumFPS: 20) - 0.05) < 0.0001)
     }
 
     @Test func speedUsageMatchesInvertSetting() {
@@ -41,11 +42,22 @@ struct BusyCatTests {
         #expect(MetricMath.speedUsage(base: 80, inverted: true) == 20)
     }
 
+    @Test func busiestDriverIgnoresUnavailableGPU() {
+        var metrics = Metrics()
+        metrics.cpu = 12
+        metrics.gpuCompute = 90
+        metrics.gpuAvailable = false
+        #expect(SpeedDriver.busiest.value(metrics) == 12)
+
+        metrics.gpuAvailable = true
+        #expect(SpeedDriver.busiest.value(metrics) == 90)
+    }
+
     @Test func memoryFishGaugeClamps() {
-        #expect(MetricMath.memoryFishLevel(pressure: -10) == 0)
-        #expect(MetricMath.memoryFishLevel(pressure: 44) == 2)
-        #expect(MetricMath.memoryFishLevel(pressure: 100) == 5)
-        #expect(MetricMath.memoryFishLevel(pressure: 150) == 5)
+        #expect(MetricMath.memoryFishLevel(pressure: .normal) == 0)
+        #expect(MetricMath.memoryFishLevel(pressure: .warning) == 3)
+        #expect(MetricMath.memoryFishLevel(pressure: .critical) == 5)
+        #expect(MetricMath.memoryFishLevel(pressure: .critical, maxFish: 0) == 0)
     }
 
     @Test func deviceGPUCountersAndComputePath() {
@@ -56,6 +68,7 @@ struct BusyCatTests {
         #expect(result.raw == 80)
         #expect(result.render == 15)
         #expect(result.subtractRenderer)
+        #expect(result.available)
         #expect(MetricMath.gpuCompute(raw: result.raw, render: result.render) == 65)
     }
 
@@ -71,6 +84,7 @@ struct BusyCatTests {
         #expect(activity.raw == 32)
         #expect(activity.render == 32)
         #expect(!activity.subtractRenderer)
+        #expect(activity.available)
 
         let pipeline = GPUReader.counters(from: [
             "Renderer Utilization %": 32,
@@ -79,6 +93,12 @@ struct BusyCatTests {
         #expect(pipeline.raw == 32)
         #expect(pipeline.render == 32)
         #expect(!pipeline.subtractRenderer)
+        #expect(pipeline.available)
+    }
+
+    @Test func missingGPUCountersReportUnavailable() {
+        let result = GPUReader.counters(from: [:])
+        #expect(!result.available)
     }
 
     @Test func numericVersionComparison() {

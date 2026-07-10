@@ -31,6 +31,8 @@ final class StatsView: NSView {
 
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 250, height: 100))
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
         resize()
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -42,6 +44,17 @@ final class StatsView: NSView {
         cpuHistory = history
         if let meterColor { meterTint = meterColor }
         cachedSections = sections()   // build once per update, reused by resize()+draw()
+        setAccessibilityLabel(appText("바쁘냥 시스템 상세 정보", "BusyCat system details"))
+        let accessibleGPU = m.gpuAvailable
+            ? String(format: appText("GPU 연산 %.1f%%", "GPU compute %.1f%%"), m.gpuCompute)
+            : appText("GPU 사용 불가", "GPU unavailable")
+        setAccessibilityValue(String(format: appText(
+            "CPU %.1f%%, %@, 메모리 %.1f%%, 열 압박 %@",
+            "CPU %.1f%%, %@, memory %.1f%%, thermal pressure %@"),
+            m.cpu, accessibleGPU, m.memory, thermalAccessibilityText(m.thermalState)))
+        setAccessibilityHelp(appText(
+            "열 압박 영역에 마우스를 올리면 온도 센서 상세 정보가 열립니다.",
+            "Hover over thermal pressure for temperature sensor details."))
         resize()
         needsDisplay = true
     }
@@ -49,6 +62,16 @@ final class StatsView: NSView {
     // MARK: Section model
 
     private enum Graph { case none, spark, bar }
+
+    private func thermalAccessibilityText(_ raw: Int) -> String {
+        switch ProcessInfo.ThermalState(rawValue: raw) {
+        case .nominal: return appText("정상", "Nominal")
+        case .fair: return appText("약간 높음", "Fair")
+        case .serious: return appText("높음", "Serious")
+        case .critical: return appText("위험", "Critical")
+        default: return "—"
+        }
+    }
     private struct Section {
         let symbols: [String]
         let title: String
@@ -81,6 +104,7 @@ final class StatsView: NSView {
         }
         func netType(_ value: String) -> String {
             if !AppLanguage.usesKorean, value == "이더넷" { return "Ethernet" }
+            if AppLanguage.usesKorean, value == "Ethernet" { return "이더넷" }
             return value
         }
         func thermalState(_ raw: Int) -> String {
@@ -90,6 +114,13 @@ final class StatsView: NSView {
             case .serious: return appText("높음", "Serious")
             case .critical: return appText("위험", "Critical")
             default: return "—"
+            }
+        }
+        func memoryPressure(_ level: MemoryPressureLevel) -> String {
+            switch level {
+            case .normal: return appText("정상", "Normal")
+            case .warning: return appText("주의", "Warning")
+            case .critical: return appText("위험", "Critical")
             }
         }
         func temp(_ value: Double?) -> String {
@@ -112,21 +143,32 @@ final class StatsView: NSView {
             thermalSubs.append("\(appText("스케줄러 제한", "Scheduler limit")): \(schedulerLimit)%")
         }
 
+        let gpuTitle = m.gpuAvailable
+            ? appText("GPU 전체: \(p0(m.gpuRaw))", "GPU total: \(p0(m.gpuRaw))")
+            : appText("GPU: 사용 불가", "GPU: Unavailable")
+        let gpuSubs = m.gpuAvailable
+            ? ["\(appText("화면 합성", "Screen compositing")): \(p0(m.gpuRender))",
+               "\(appText("연산 부하 (고양이)", "Compute load (cat)")): \(p1(m.gpuCompute))"]
+            : [appText("이 Mac에서 GPU 카운터를 읽지 못했습니다.", "GPU counters could not be read on this Mac.")]
+        let diskTitle = m.diskAvailable
+            ? appText("저장 용량: \(p1(m.disk)) 사용됨", "Storage: \(p1(m.disk)) used")
+            : appText("저장 용량: —", "Storage: —")
+        let diskSubs = m.diskAvailable
+            ? ["\(gb(m.diskUsed)) / \(gb(m.diskTotal))"]
+            : [appText("용량을 읽을 수 없음", "Capacity unavailable")]
+
         var list: [Section] = [
             section(["cpu"], "CPU: \(p1(m.cpu))",
                     subs: ["\(appText("시스템", "System")): \(p1(m.cpuSystem))",
                            "\(appText("사용자", "User")): \(p1(m.cpuUser))",
                            "\(appText("대기", "Idle")): \(p1(max(0, 100 - m.cpu)))"], .spark),
-            section(["gpucard", "cpu.fill"], "GPU: \(p0(m.gpuRaw))",
-                    subs: ["\(appText("화면 합성", "Screen compositing")): \(p0(m.gpuRender))",
-                           "\(appText("고양이 반영", "Cat speed basis")): \(p1(m.gpu))"], .none),
+            section(["gpucard", "cpu.fill"], gpuTitle, subs: gpuSubs, .none),
             section(["memorychip"], "\(appText("메모리", "Memory")): \(p1(m.memory))",
-                    subs: ["\(appText("압력", "Pressure")): \(p1(m.memPressure))",
+                    subs: ["\(appText("압력", "Pressure")): \(memoryPressure(m.memoryPressure))",
                            "\(appText("앱 메모리", "App memory")): \(gb(m.memApp))",
                            "\(appText("와이어드 메모리", "Wired memory")): \(gb(m.memWired))",
                            "\(appText("압축됨", "Compressed")): \(mem(m.memCompressed))"], .none),
-            section(["internaldrive"], appText("저장 용량: \(p1(m.disk)) 사용됨", "Storage: \(p1(m.disk)) used"),
-                    subs: ["\(gb(m.diskUsed)) / \(gb(m.diskTotal))"], .bar),
+            section(["internaldrive"], diskTitle, subs: diskSubs, m.diskAvailable ? .bar : .none),
             section(["thermometer.medium", "thermometer"],
                     "\(appText("열 압박", "Thermal pressure")):", subs: thermalSubs, .none,
                     accent: thermalAccent, titleValue: thermalState(m.thermalState),
@@ -140,10 +182,12 @@ final class StatsView: NSView {
                        "\(appText("사이클 수", "Cycle count")): \(m.batCycles.map(String.init) ?? "—")",
                        "\(appText("온도", "Temperature")): \(m.batTemp.map { String(format: "%.1f°C", $0) } ?? "—")"], .none))
         }
+        let upload = m.netRateAvailable ? rate(m.netUp) : appText("측정 중…", "Measuring…")
+        let download = m.netRateAvailable ? rate(m.netDown) : appText("측정 중…", "Measuring…")
         list.append(section(["wifi", "network"], "\(appText("네트워크", "Network")): \(netType(m.netType))",
             subs: ["\(appText("로컬 IP", "Local IP")): \(m.localIP)",
-                   "\(appText("업로드", "Upload")): \(rate(m.netUp))",
-                   "\(appText("다운로드", "Download")): \(rate(m.netDown))"],
+                   "\(appText("업로드", "Upload")): \(upload)",
+                   "\(appText("다운로드", "Download")): \(download)"],
             .none))
         return list
     }

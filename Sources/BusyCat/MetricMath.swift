@@ -40,17 +40,25 @@ enum MetricMath {
         inverted ? 100 - base : base
     }
 
-    /// RAM fish gauge level from memory pressure-like percentage.
-    static func memoryFishLevel(pressure: Double, maxFish: Int = 5) -> Int {
+    /// RAM fish gauge level from macOS' real system memory-pressure state.
+    static func memoryFishLevel(pressure: MemoryPressureLevel, maxFish: Int = 5) -> Int {
         guard maxFish > 0 else { return 0 }
-        let clamped = max(0, min(100, pressure))
-        return max(0, min(maxFish, Int((clamped / 100 * Double(maxFish)).rounded())))
+        switch pressure {
+        case .normal:
+            return 0
+        case .warning:
+            return max(1, Int((Double(maxFish) * 0.6).rounded()))
+        case .critical:
+            return maxFish
+        }
     }
 }
 
 enum SpeedCurve {
     /// Half RunCat's animation rate: about 2.5 fps idle to 50 fps at 100%.
-    static func interval(forUsage usage: Double) -> TimeInterval {
-        0.4 / max(1.0, min(20.0, usage / 5.0))
+    static func interval(forUsage usage: Double, maximumFPS: Double = 50) -> TimeInterval {
+        let base = 0.4 / max(1.0, min(20.0, usage / 5.0))
+        guard maximumFPS > 0 else { return base }
+        return max(base, 1 / maximumFPS)
     }
 }

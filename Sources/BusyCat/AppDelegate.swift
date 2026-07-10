@@ -9,151 +9,13 @@
  status-bar button's label color first, then falls back to system appearance.
 
  Speed follows RunCat's curve at half the frame rate; CPU% uses the same model.
- Heavy metrics (disk/net/battery) are sampled only while the menu is open.
+ Detailed metrics are prewarmed once in the background, then refreshed while
+ the menu is open.
 */
 
 import Cocoa
 import QuartzCore
 import ServiceManagement
-
-enum AppLanguage: String, CaseIterable {
-    case system, korean, english
-
-    static var current: AppLanguage {
-        AppLanguage(rawValue: UserDefaults.standard.string(forKey: "language") ?? "") ?? .system
-    }
-
-    static var usesKorean: Bool {
-        switch current {
-        case .system:
-            return Locale.preferredLanguages.first?.lowercased().hasPrefix("ko") == true
-        case .korean:
-            return true
-        case .english:
-            return false
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .system: return appText("시스템 언어 (한국어 외 영어)", "System language (English unless Korean)")
-        case .korean: return appText("한국어", "Korean")
-        case .english: return appText("영어", "English")
-        }
-    }
-}
-
-func appText(_ ko: String, _ en: String) -> String {
-    AppLanguage.usesKorean ? ko : en
-}
-
-func countText(_ count: Int, _ koUnit: String, _ enSingular: String, _ enPlural: String) -> String {
-    if AppLanguage.usesKorean {
-        return "\(count)\(koUnit)"
-    }
-    return "\(count) \(count == 1 ? enSingular : enPlural)"
-}
-
-enum SpeedDriver: String, CaseIterable {
-    case busiest, cpu, gpu, memory
-    var label: String {
-        switch self {
-        case .busiest: return appText("가장 바쁜 쪽", "Busiest")
-        case .cpu: return appText("CPU 사용률", "CPU usage")
-        case .gpu: return appText("GPU 부하", "GPU load")
-        case .memory: return appText("메모리 사용률", "Memory usage")
-        }
-    }
-    func value(_ m: Metrics) -> Double {
-        switch self {
-        case .busiest: return max(m.cpu, m.gpu)
-        case .cpu: return m.cpu
-        case .gpu: return m.gpu
-        case .memory: return m.memory
-        }
-    }
-}
-
-enum CatColor: String, CaseIterable {
-    case auto, white, black
-    var label: String {
-        switch self {
-        case .auto: return appText("자동 (메뉴바에 맞춤)", "Auto (match menu bar)")
-        case .white: return appText("흰색", "White")
-        case .black: return appText("검정", "Black")
-        }
-    }
-}
-
-enum MeterColor: String, CaseIterable {
-    case graphite, accent, blue, green, orange, purple
-    var label: String {
-        switch self {
-        case .graphite: return appText("흑연", "Graphite")
-        case .accent: return appText("시스템 강조색", "System accent")
-        case .blue: return appText("파랑", "Blue")
-        case .green: return appText("초록", "Green")
-        case .orange: return appText("주황", "Orange")
-        case .purple: return appText("보라", "Purple")
-        }
-    }
-    var color: NSColor {
-        switch self {
-        case .graphite:
-            return .systemGray
-        case .accent: return .controlAccentColor
-        case .blue: return .systemBlue
-        case .green: return .systemGreen
-        case .orange: return .systemOrange
-        case .purple: return .systemPurple
-        }
-    }
-}
-
-enum StatusTextMode: String, CaseIterable {
-    case off, driver, cpu, gpu, memory, temperature, thermal
-    var label: String {
-        switch self {
-        case .off: return appText("표시 안 함", "Hidden")
-        case .driver: return appText("고양이 속도 %", "Cat speed %")
-        case .cpu: return "CPU %"
-        case .gpu: return "GPU %"
-        case .memory: return appText("메모리 %", "Memory %")
-        case .temperature: return appText("온도", "Temperature")
-        case .thermal: return appText("열 압박", "Thermal pressure")
-        }
-    }
-}
-
-final class SpeedStatusRowView: NSView {
-    private let textField = NSTextField(labelWithString: "")
-
-    init(_ title: String) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 190, height: 20))
-        textField.font = .menuFont(ofSize: 11)
-        textField.textColor = .secondaryLabelColor
-        textField.lineBreakMode = .byTruncatingTail
-        textField.maximumNumberOfLines = 1
-        textField.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(textField)
-        NSLayoutConstraint.activate([
-            textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            textField.centerYAnchor.constraint(equalTo: centerYAnchor)
-        ])
-        update(title)
-    }
-
-    func update(_ title: String) {
-        textField.stringValue = title
-        let font = textField.font ?? .menuFont(ofSize: 11)
-        let width = min(210, max(150, (title as NSString).size(withAttributes: [.font: font]).width + 26))
-        setFrameSize(NSSize(width: width, height: 20))
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { nil }
-}
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let barHeight: CGFloat = 18
@@ -162,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var statusItem: NSStatusItem = {
         NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     }()
-    private let container = NSView()
+    private let container = StatusContainerView()
     private let spriteLayer = CALayer()
     private let textLayer = CATextLayer()
     private let fishLayer = CALayer()
@@ -176,10 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var index = 0
     private var runnerTimer: Timer?
     private var sampleTimer: Timer?
+    private var updateTimer: Timer?
     private var currentInterval: TimeInterval = 0.2
     private var asleep = false
 
-    private let sampler = SystemSampler()
+    private let sampling = SamplingCoordinator()
+    private var samplingInFlight = false
+    private var fullSamplePending = false
     private var latest = Metrics()
     private var menuOpen = false
 
@@ -245,6 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
     private var settingsPanel: NSPanel?
     private var thermalPopover: NSPopover?
+    private var firstLaunchPopover: NSPopover?
+    private var updateCheckInFlight = false
+    private var lastUpdateAttempt = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single instance: if another copy is already running, quit immediately so
@@ -253,7 +121,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dupes = NSRunningApplication.runningApplications(
             withBundleIdentifier: Bundle.main.bundleIdentifier ?? "com.dlfnek.busycat")
             .filter { $0.processIdentifier != me.processIdentifier }
-        if !dupes.isEmpty { NSApp.terminate(nil); return }
+        if !dupes.isEmpty {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = appText("바쁘냥이 이미 실행 중입니다", "BusyCat is already running")
+            alert.informativeText = appText(
+                "업데이트한 앱을 실행하려면 메뉴바의 기존 바쁘냥을 종료한 뒤 다시 열어 주세요.",
+                "To launch an updated copy, quit the existing BusyCat from the menu bar and open it again.")
+            alert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
 
         setupSprite()
         statsView.onThermalHoverChanged = { [weak self] hovering, rect in
@@ -263,21 +142,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerSleepWake()
         rebuildArtwork()
         layout()
-        _ = sampler.sampleLight()
         startAnimation(interval: currentInterval)
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.requestSample()
+        }
         timer.tolerance = 0.2
         // .common so it keeps firing while the menu is open (event-tracking mode),
         // otherwise the panel only refreshes on close/reopen.
         RunLoop.main.add(timer, forMode: .common)
         sampleTimer = timer
-        tick()
+        // Warm the expensive detail cache in the background. Opening the menu
+        // immediately after launch still displays the current cached snapshot.
+        requestSample(full: true)
+        startUpdateSchedule()
         maybeAutoCheckUpdate()
+        showFirstLaunchHintIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         runnerTimer?.invalidate()
         sampleTimer?.invalidate()
+        updateTimer?.invalidate()
     }
 
     // MARK: Sprite
@@ -293,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         container.wantsLayer = true
         button.addSubview(container)
 
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let scale = currentBackingScale()
         spriteLayer.contentsGravity = .resizeAspect
         spriteLayer.contentsScale = scale
         spriteLayer.magnificationFilter = .linear
@@ -313,6 +198,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         container.layer?.addSublayer(textLayer)
         container.layer?.addSublayer(spriteLayer)
         container.layer?.addSublayer(fishLayer)
+        container.onDisplayPropertiesChanged = { [weak self] in
+            self?.statusDisplayPropertiesChanged()
+        }
+        updateStatusAccessibility()
+    }
+
+    private func currentBackingScale() -> CGFloat {
+        statusItem.button?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+    }
+
+    private func statusDisplayPropertiesChanged() {
+        lastAutomaticColorCheck = .distantPast
+        rebuildArtwork()
+        layout()
     }
 
     private func baseCatColor() -> NSColor {
@@ -377,7 +276,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildArtwork() {
         lastTintKey = catTintKey()
         let color = baseCatColor()
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let scale = currentBackingScale()
+        spriteLayer.contentsScale = scale
+        textLayer.contentsScale = scale
+        fishLayer.contentsScale = scale
         let frames = CatFrames.load(height: barHeight, flipped: flip)
         if thermalOutlineActive() {
             tintedFrames = frames.compactMap {
@@ -490,10 +392,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateFishPile() {
         guard memoryFish else { return }
-        let level = MetricMath.memoryFishLevel(pressure: latest.memPressure)
+        let level = MetricMath.memoryFishLevel(pressure: latest.memoryPressure)
         guard level != lastFishLevel else { return }
         lastFishLevel = level
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let scale = currentBackingScale()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fishLayer.contents = fishPileImage(level: level, scale: scale)
@@ -577,6 +479,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 action: #selector(updateItemClicked), keyEquivalent: "")
         updateItem.target = self
         menu.addItem(updateItem)
+        if updateCheckInFlight {
+            updateItem.title = appText("업데이트 확인 중…", "Checking for Updates…")
+            updateItem.action = nil
+        } else if let availableUpdate {
+            setUpdateAvailable(availableUpdate)
+        }
+        let about = NSMenuItem(title: appText("바쁘냥 정보…", "About BusyCat…"),
+                               action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
         let quit = NSMenuItem(title: appText("바쁘냥 종료", "Quit BusyCat"),
                               action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -644,13 +556,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return stack
     }
 
-    private func toggle(_ title: String, _ action: Selector, _ on: Bool) -> NSMenuItem {
-        let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        it.target = self
-        it.state = on ? .on : .off
-        return it
-    }
-
     // MARK: Settings
 
     @objc private func showSettings() {
@@ -661,14 +566,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsPanel?.makeKeyAndOrderFront(nil)
     }
 
+    private func showFirstLaunchHintIfNeeded() {
+        let key = "didShowMenuBarHint"
+        guard !defaults.bool(forKey: key), let button = statusItem.button else { return }
+        defaults.set(true, forKey: key)
+
+        let label = NSTextField(wrappingLabelWithString: appText(
+            "바쁘냥이 메뉴바에서 실행 중입니다.\n고양이를 누르면 상세 정보와 설정이 열립니다.",
+            "BusyCat is running in your menu bar.\nClick the cat for details and settings."))
+        label.font = .systemFont(ofSize: 12)
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 270, height: 70))
+        content.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
+            label.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
+            label.centerYAnchor.constraint(equalTo: content.centerYAnchor)
+        ])
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = content.frame.size
+        popover.contentViewController = NSViewController()
+        popover.contentViewController?.view = content
+        firstLaunchPopover = popover
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak button] in
+            guard let self, let button, !self.menuOpen,
+                  self.firstLaunchPopover === popover else { return }
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self, weak popover] in
+            popover?.close()
+            if self?.firstLaunchPopover === popover { self?.firstLaunchPopover = nil }
+        }
+    }
+
     private func buildSettingsPanel() -> NSPanel {
+        let contentSize = NSSize(width: 420, height: 455)
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 455),
+            contentRect: NSRect(origin: .zero, size: contentSize),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
         panel.title = appText("바쁘냥 설정", "BusyCat Settings")
         panel.isReleasedWhenClosed = false
+        panel.contentMinSize = contentSize
+        panel.contentMaxSize = contentSize
 
         let root = NSView()
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -770,7 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         button.target = self
         button.action = action
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 210).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 210).isActive = true
         return button
     }
 
@@ -782,22 +726,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Sampling + animation
 
-    private func tick() {
-        if menuOpen {
-            latest = sampler.sampleAll()   // full detail while the panel is visible
-        } else {
-            let light = sampler.sampleLight()
-            latest.cpu = light.cpu
-            latest.gpu = light.gpu
-            latest.memory = light.memory
-            latest.memPressure = light.memPressure
-            latest.thermalState = ProcessInfo.processInfo.thermalState.rawValue
-            if statusTextMode == .temperature {
-                latest.thermalTemp = sampler.temperatureForStatusText()
+    private func requestSample(full requestedFull: Bool? = nil) {
+        guard !asleep else { return }
+        let full = requestedFull ?? menuOpen
+        if samplingInFlight {
+            if full { fullSamplePending = true }
+            return
+        }
+
+        samplingInFlight = true
+        sampling.sample(full: full, includeTemperature: statusTextMode == .temperature) { [weak self] sample in
+            guard let self else { return }
+            self.samplingInFlight = false
+            self.applySample(sample, full: full)
+            if self.fullSamplePending {
+                self.fullSamplePending = false
+                self.requestSample(full: true)
             }
         }
+    }
+
+    private func applySample(_ sample: Metrics, full: Bool) {
+        if full {
+            latest = sample
+        } else {
+            latest.cpu = sample.cpu
+            latest.cpuSystem = sample.cpuSystem
+            latest.cpuUser = sample.cpuUser
+            latest.gpuCompute = sample.gpuCompute
+            latest.gpuRaw = sample.gpuRaw
+            latest.gpuRender = sample.gpuRender
+            latest.gpuAvailable = sample.gpuAvailable
+            latest.memory = sample.memory
+            latest.memoryPressure = sample.memoryPressure
+            latest.memApp = sample.memApp
+            latest.memWired = sample.memWired
+            latest.memCompressed = sample.memCompressed
+            latest.thermalState = sample.thermalState
+            if statusTextMode == .temperature {
+                latest.thermalTemp = sample.thermalTemp
+            }
+        }
+
         cpuHistory.append(latest.cpu)
         if cpuHistory.count > 60 { cpuHistory.removeFirst() }
+        updateStatusAccessibility()
+        refreshPresentation()
+    }
+
+    private func refreshPresentation() {
         if menuOpen {
             statsView.update(latest, history: cpuHistory, meterColor: meterColor.color)
             updateSpeedStatusItem()
@@ -808,7 +785,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard !asleep else { return }
         let usage = effectiveSpeedUsage(latest)
-        let target = SpeedCurve.interval(forUsage: usage)
+        let thermal = ProcessInfo.ThermalState(rawValue: latest.thermalState) ?? .nominal
+        let maximumFPS: Double
+        switch thermal {
+        case .serious, .critical:
+            maximumFPS = 20
+        case .fair:
+            maximumFPS = 30
+        case .nominal:
+            maximumFPS = ProcessInfo.processInfo.isLowPowerModeEnabled ? 30 : 50
+        @unknown default:
+            maximumFPS = 30
+        }
+        let target = SpeedCurve.interval(forUsage: usage, maximumFPS: maximumFPS)
         // Relative threshold: only rebuild the timer when the rate changes
         // meaningfully (>10%), so tiny EMA jitter doesn't recreate it every tick.
         // A 49.5↔50 fps difference is invisible; the churn isn't free.
@@ -842,7 +831,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .cpu:
             return String(format: "CPU %.0f%%", m.cpu)
         case .gpu:
-            return String(format: "GPU %.0f%%", m.gpu)
+            return m.gpuAvailable
+                ? String(format: appText("GPU 연산 %.0f%%", "GPU compute %.0f%%"), m.gpuCompute)
+                : appText("GPU 연산 —", "GPU compute —")
         case .memory:
             return String(format: "RAM %.0f%%", m.memory)
         case .temperature:
@@ -852,23 +843,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func speedLabel(for m: Metrics) -> String {
-        switch driver {
-        case .busiest:
-            return m.gpu > m.cpu ? appText("GPU 부하", "GPU load") : appText("CPU 사용률", "CPU usage")
-        case .cpu, .gpu, .memory:
-            return driver.label
-        }
-    }
-
     private func speedShortLabel(for m: Metrics) -> String {
         switch driver {
         case .busiest:
-            return m.gpu > m.cpu ? "GPU" : "CPU"
+            return m.gpuAvailable && m.gpuCompute > m.cpu ? appText("GPU 연산", "GPU compute") : "CPU"
         case .cpu:
             return "CPU"
         case .gpu:
-            return "GPU"
+            return m.gpuAvailable ? appText("GPU 연산", "GPU compute") : appText("GPU 사용 불가", "GPU unavailable")
         case .memory:
             return appText("메모리", "Memory")
         }
@@ -900,12 +882,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func memoryPressureText(_ level: MemoryPressureLevel) -> String {
+        switch level {
+        case .normal: return appText("정상", "Normal")
+        case .warning: return appText("주의", "Warning")
+        case .critical: return appText("위험", "Critical")
+        }
+    }
+
+    private func updateStatusAccessibility() {
+        guard let button = statusItem.button else { return }
+        let gpuValue = latest.gpuAvailable
+            ? String(format: appText("GPU 연산 %.0f%%", "GPU compute %.0f%%"), latest.gpuCompute)
+            : appText("GPU 사용 불가", "GPU unavailable")
+        button.toolTip = appText("바쁘냥 시스템 상태", "BusyCat system status")
+        button.setAccessibilityLabel(appText("바쁘냥 시스템 모니터", "BusyCat system monitor"))
+        button.setAccessibilityHelp(appText(
+            "누르면 CPU, GPU 연산, 메모리와 온도 상세 정보를 엽니다.",
+            "Press to open CPU, GPU compute, memory, and temperature details."))
+        button.setAccessibilityValue(String(format: appText(
+            "CPU %.0f%%, %@, 메모리 %.0f%%, 메모리 압력 %@",
+            "CPU %.0f%%, %@, memory %.0f%%, memory pressure %@"),
+            latest.cpu, gpuValue, latest.memory,
+            memoryPressureText(latest.memoryPressure)))
+    }
+
     // MARK: Actions
 
     private func applyDriver(_ d: SpeedDriver) {
         driver = d
         updateSpeedStatusItem()
-        tick()
+        refreshPresentation()
     }
 
     private func applyCatColor(_ c: CatColor) {
@@ -924,14 +931,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyStatusTextMode(_ mode: StatusTextMode) {
         statusTextMode = mode
         layout()
-        tick()
+        refreshPresentation()
+        if mode == .temperature { requestSample() }
     }
 
     private func applyLanguage(_ lang: AppLanguage) {
         language = lang
         buildMenu()
         layout()
-        tick()
+        refreshPresentation()
+        updateStatusAccessibility()
         if settingsPanel?.isVisible == true {
             settingsPanel?.close()
             settingsPanel = buildSettingsPanel()
@@ -949,7 +958,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyInvert(_ on: Bool) {
         invert = on
-        tick()
+        refreshPresentation()
     }
 
     private func applyFlip(_ on: Bool) {
@@ -1022,6 +1031,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
 
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: appText("바쁘냥", "BusyCat"),
+            .applicationVersion: "v\(Updater.currentVersion)",
+            .credits: NSAttributedString(string: appText(
+                "Apple Silicon용 오픈소스 메뉴바 시스템 모니터",
+                "Open-source menu bar system monitor for Apple Silicon"))
+        ])
+    }
+
     @objc private func quit() { NSApp.terminate(nil) }
 
     // MARK: Update check
@@ -1033,10 +1053,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(Updater.releasesPage)
             return
         }
+        guard !updateCheckInFlight else { return }
+        updateCheckInFlight = true
         updateItem.title = appText("업데이트 확인 중…", "Checking for Updates…")
         updateItem.action = nil
         Updater.check { [weak self] result in
             guard let self else { return }
+            self.updateCheckInFlight = false
             switch result {
             case .updateAvailable(let v):
                 self.setUpdateAvailable(v)
@@ -1073,13 +1096,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateItem.target = self
     }
 
-    /// Quiet background check, at most once per day.
+    /// Quiet background check: once per day after success, and no more than once
+    /// per hour after a transient failure during the current app session.
     private func maybeAutoCheckUpdate() {
         let key = "lastUpdateCheck"
-        let now = Date().timeIntervalSince1970
-        guard now - defaults.double(forKey: key) > 24 * 3600 else { return }
+        let attempt = Date()
+        let now = attempt.timeIntervalSince1970
+        guard !updateCheckInFlight,
+              attempt.timeIntervalSince(lastUpdateAttempt) > 3600,
+              now - defaults.double(forKey: key) > 24 * 3600 else { return }
+        lastUpdateAttempt = attempt
+        updateCheckInFlight = true
         Updater.check { [weak self] result in
             guard let self else { return }
+            self.updateCheckInFlight = false
             switch result {
             case .updateAvailable(let v):
                 self.defaults.set(now, forKey: key)
@@ -1087,9 +1117,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .upToDate:
                 self.defaults.set(now, forKey: key)
             case .failed:
-                break // retry on the next launch instead of suppressing for 24h
+                break // retry after an hour, or once on the next launch
             }
         }
+    }
+
+    private func startUpdateSchedule() {
+        let timer = Timer(timeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            self?.maybeAutoCheckUpdate()
+        }
+        timer.tolerance = 30 * 60
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
     }
 
     private func isLoginEnabled() -> Bool {
@@ -1102,8 +1141,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 if on { try SMAppService.mainApp.register() }
                 else { try SMAppService.mainApp.unregister() }
-            } catch { NSLog("BusyCat login item error: \(error)") }
+            } catch {
+                NSLog("BusyCat login item error: \(error)")
+                showAlert(
+                    message: appText("로그인 항목을 변경하지 못했습니다", "Couldn't change the login item"),
+                    information: appText(
+                        "시스템 설정 → 일반 → 로그인 항목에서 바쁘냥 권한을 확인해 주세요.\n\n\(error.localizedDescription)",
+                        "Check BusyCat under System Settings → General → Login Items.\n\n\(error.localizedDescription)"),
+                    style: .warning)
+                return
+            }
+            if on, SMAppService.mainApp.status == .requiresApproval {
+                showAlert(
+                    message: appText("로그인 항목 승인이 필요합니다", "Login item approval required"),
+                    information: appText(
+                        "시스템 설정 → 일반 → 로그인 항목에서 바쁘냥을 허용해 주세요.",
+                        "Allow BusyCat under System Settings → General → Login Items."),
+                    style: .informational)
+            }
         }
+    }
+
+    private func showAlert(message: String, information: String, style: NSAlert.Style) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = style
+        alert.messageText = message
+        alert.informativeText = information
+        alert.runModal()
     }
 
     // MARK: Sleep / wake
@@ -1124,15 +1189,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func onWake() {
         asleep = false
-        _ = sampler.sampleLight()
+        sampling.resetFastHistory()
         startAnimation(interval: currentInterval)
+        requestSample(full: menuOpen)
+        maybeAutoCheckUpdate()
     }
 }
 
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         menuOpen = true
-        tick()
+        statsView.update(latest, history: cpuHistory, meterColor: meterColor.color)
+        updateSpeedStatusItem()
+        maybeAutoCheckUpdate()
+        requestSample(full: true)
     }
 
     func menuDidClose(_ menu: NSMenu) {

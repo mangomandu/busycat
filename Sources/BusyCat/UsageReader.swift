@@ -1,20 +1,34 @@
 import Foundation
+import Darwin
 import IOKit
 import SystemConfiguration
 
-@_silgen_name("IOHIDEventSystemClientCreate")
-private func IOHIDEventSystemClientCreate(_ allocator: CFAllocator?) -> Unmanaged<CFTypeRef>?
-@_silgen_name("IOHIDEventSystemClientSetMatching")
-private func IOHIDEventSystemClientSetMatching(_ client: CFTypeRef, _ matching: CFDictionary)
-@_silgen_name("IOHIDEventSystemClientCopyServices")
-private func IOHIDEventSystemClientCopyServices(_ client: CFTypeRef) -> Unmanaged<CFArray>?
-@_silgen_name("IOHIDServiceClientCopyProperty")
-private func IOHIDServiceClientCopyProperty(_ service: CFTypeRef, _ key: CFString) -> Unmanaged<CFTypeRef>?
-@_silgen_name("IOHIDServiceClientCopyEvent")
-private func IOHIDServiceClientCopyEvent(_ service: CFTypeRef, _ eventType: Int64,
-                                         _ options: Int64, _ timestamp: Int64) -> Unmanaged<CFTypeRef>?
-@_silgen_name("IOHIDEventGetFloatValue")
-private func IOHIDEventGetFloatValue(_ event: CFTypeRef, _ field: Int64) -> Double
+/// Temperature access uses private IOHID symbols whose availability isn't
+/// guaranteed by the SDK. Resolve them at runtime so a future macOS can disable
+/// temperature details without preventing the whole app from launching.
+private enum HIDPrivateAPI {
+    typealias Create = @convention(c) (CFAllocator?) -> Unmanaged<CFTypeRef>?
+    typealias SetMatching = @convention(c) (CFTypeRef, CFDictionary) -> Void
+    typealias CopyServices = @convention(c) (CFTypeRef) -> Unmanaged<CFArray>?
+    typealias CopyProperty = @convention(c) (CFTypeRef, CFString) -> Unmanaged<CFTypeRef>?
+    typealias CopyEvent = @convention(c) (CFTypeRef, Int64, Int64, Int64) -> Unmanaged<CFTypeRef>?
+    typealias GetFloatValue = @convention(c) (CFTypeRef, Int64) -> Double
+
+    private static let handle = dlopen(
+        "/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY)
+
+    static let create: Create? = load("IOHIDEventSystemClientCreate", as: Create.self)
+    static let setMatching: SetMatching? = load("IOHIDEventSystemClientSetMatching", as: SetMatching.self)
+    static let copyServices: CopyServices? = load("IOHIDEventSystemClientCopyServices", as: CopyServices.self)
+    static let copyProperty: CopyProperty? = load("IOHIDServiceClientCopyProperty", as: CopyProperty.self)
+    static let copyEvent: CopyEvent? = load("IOHIDServiceClientCopyEvent", as: CopyEvent.self)
+    static let getFloatValue: GetFloatValue? = load("IOHIDEventGetFloatValue", as: GetFloatValue.self)
+
+    private static func load<T>(_ name: String, as type: T.Type) -> T? {
+        guard let handle, let symbol = dlsym(handle, name) else { return nil }
+        return unsafeBitCast(symbol, to: type)
+    }
+}
 
 struct TemperatureSensor {
     var name: String
@@ -30,12 +44,13 @@ struct Metrics {
     var cpuSystem: Double = 0    // %
     var cpuUser: Double = 0      // %
     // GPU
-    var gpu: Double = 0          // % compute (compositing baseline removed) — drives the cat
+    var gpuCompute: Double = 0   // % compute estimate (renderer removed) — drives the cat
     var gpuRaw: Double = 0       // % raw Device Utilization (incl. compositing)
     var gpuRender: Double = 0    // % Renderer (screen compositing / graphics)
+    var gpuAvailable: Bool = false
     // Memory (Activity Monitor "Memory Used" = App + Wired + Compressed)
     var memory: Double = 0       // % used
-    var memPressure: Double = 0  // % = (wired + compressed) / total
+    var memoryPressure: MemoryPressureLevel = .normal
     var memApp: Double = 0       // bytes (internal/anonymous, purgeable included)
     var memWired: Double = 0     // bytes
     var memCompressed: Double = 0 // bytes
@@ -43,9 +58,11 @@ struct Metrics {
     var disk: Double = 0         // % used
     var diskUsed: Double = 0     // bytes
     var diskTotal: Double = 0    // bytes
+    var diskAvailable: Bool = false
     // Network
     var netDown: Double = 0      // bytes/s
     var netUp: Double = 0        // bytes/s
+    var netRateAvailable: Bool = false
     var netType: String = "—"    // "Wi-Fi" / "이더넷" …
     var localIP: String = "—"
     // Battery (nil on desktop Macs)
@@ -80,6 +97,9 @@ final class SystemSampler {
     // Cache the host port once; mach_host_self() returns a send right the caller
     // must balance, so calling it every sample would slowly leak port references.
     private let host = mach_host_self()
+    private let totalMemory = Double(ProcessInfo.processInfo.physicalMemory)
+    private let pageSize = Double(vm_kernel_page_size)
+    private let memoryPressureMonitor = MemoryPressureMonitor()
     private var prevUser: UInt32 = 0
     private var prevSystem: UInt32 = 0
     private var prevIdle: UInt32 = 0
@@ -92,6 +112,7 @@ final class SystemSampler {
     private var prevRx: UInt64 = 0
     private var prevTx: UInt64 = 0
     private var prevNetTime: Double = 0
+    private var prevNetInterface = ""
     private var netPrimed = false
     private var downEMA = 0.0
     private var upEMA = 0.0
@@ -102,12 +123,12 @@ final class SystemSampler {
     private var gpuSubtractRenderer = true
     private var gpuEMAPrimed = false
     // Slow/heavy metrics (disk, network type+IP, battery, thermal) refreshed by
-    // wall time while the menu is open — they barely change second-to-second.
+    // wall time during prewarm/menu-open sampling; they barely change each second.
     private let slowRefreshInterval = 5.0
     private var nextSlowRefresh = 0.0
     private var slowPrimed = false
-    private var cDisk: (percent: Double, used: Double, total: Double) = (0, 0, 0)
-    private var cNet: (type: String, ip: String) = ("—", "—")
+    private var cDisk: (percent: Double, used: Double, total: Double, available: Bool) = (0, 0, 0, false)
+    private var cNet: (type: String, ip: String, bsd: String?) = ("—", "—", nil)
     private var cBat: (percent: Double?, charging: Bool, onAC: Bool,
                        health: Double?, cycles: Int?, temp: Double?) = (nil, false, false, nil, nil, nil)
     private var cThermal = ThermalReader.Snapshot()
@@ -116,6 +137,14 @@ final class SystemSampler {
     private var statusTemperaturePrimed = false
 
     deinit { mach_port_deallocate(mach_task_self_, host) }
+
+    func resetFastHistory() {
+        cpuPrimed = false
+        cpuEMAPrimed = false
+        netPrimed = false
+        netEMAPrimed = false
+        gpuEMAPrimed = false
+    }
 
     /// Cheap metrics needed every second to drive the cat (CPU/GPU/memory are all
     /// single fast kernel calls). Used while the menu is closed — i.e. ~always.
@@ -126,28 +155,36 @@ final class SystemSampler {
         m.cpuSystem = c.system
         m.cpuUser = c.user
         let g = GPUReader.stats()
-        if gpuEMAPrimed {
-            gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
-            gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
+        if g.available {
+            if gpuEMAPrimed {
+                gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
+                gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
+            } else {
+                gpuRawEMA = g.raw
+                gpuRenderEMA = g.render
+                gpuEMAPrimed = true
+            }
         } else {
-            gpuRawEMA = g.raw
-            gpuRenderEMA = g.render
-            gpuEMAPrimed = true
+            gpuRawEMA = 0
+            gpuRenderEMA = 0
+            gpuEMAPrimed = false
         }
         gpuSubtractRenderer = g.subtractRenderer
+        m.gpuAvailable = g.available
         m.gpuRaw = gpuRawEMA
         m.gpuRender = gpuRenderEMA
         // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
         // so ticks where integer render momentarily ≥ raw don't bias the cat low.
-        m.gpu = gpuSubtractRenderer
+        m.gpuCompute = gpuSubtractRenderer
             ? MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
             : gpuRawEMA
         let mem = memory()
         m.memory = mem.percent
-        m.memPressure = mem.pressure
+        m.memoryPressure = memoryPressureMonitor.level
         m.memApp = mem.app
         m.memWired = mem.wired
         m.memCompressed = mem.compressed
+        m.thermalState = ProcessInfo.processInfo.thermalState.rawValue
         return m
     }
 
@@ -164,15 +201,11 @@ final class SystemSampler {
     }
 
     /// Full snapshot including the costlier reads (disk volume query, getifaddrs,
-    /// IOKit). Only worth doing while the menu is actually open, since those extra
-    /// rows aren't visible otherwise.
+    /// IOKit). Called once for background prewarm, then while the detailed menu is
+    /// open so its extra rows stay current.
     func sampleAll() -> Metrics {
         var m = sampleLight()
-        // Network throughput is meaningful per-second, so read it every tick…
-        let net = network()
-        m.netDown = net.down
-        m.netUp = net.up
-        // …but the heavy, slow-changing reads (disk volume query, SCNetworkInterface
+        // Heavy, slow-changing reads (disk volume query, SCNetworkInterface
         // lookup, full battery property dict) only every ~5s.
         let now = ProcessInfo.processInfo.systemUptime
         if !slowPrimed || now >= nextSlowRefresh {
@@ -186,9 +219,17 @@ final class SystemSampler {
             slowPrimed = true
             nextSlowRefresh = now + slowRefreshInterval
         }
+        // Network throughput is meaningful per-second. Use the primary interface
+        // selected above so the displayed interface/IP and rate describe the same
+        // connection rather than summing unrelated AirDrop/bridge traffic.
+        let net = network(interface: cNet.bsd)
+        m.netDown = net.down
+        m.netUp = net.up
+        m.netRateAvailable = net.available
         m.disk = cDisk.percent
         m.diskUsed = cDisk.used
         m.diskTotal = cDisk.total
+        m.diskAvailable = cDisk.available
         m.netType = cNet.type
         m.localIP = cNet.ip
         m.battery = cBat.percent
@@ -260,7 +301,7 @@ final class SystemSampler {
     // MARK: Memory — Activity Monitor-like model: Used = App + Wired + Compressed.
     // App Memory uses internal/anonymous pages, including purgeable pages.
 
-    private func memory() -> (percent: Double, pressure: Double, app: Double, wired: Double, compressed: Double) {
+    private func memory() -> (percent: Double, app: Double, wired: Double, compressed: Double) {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
             MemoryLayout<vm_statistics64>.stride / MemoryLayout<integer_t>.stride
@@ -270,71 +311,64 @@ final class SystemSampler {
                 host_statistics64(host, HOST_VM_INFO64, reb, &count)
             }
         }
-        guard kr == KERN_SUCCESS else { return (0, 0, 0, 0, 0) }
-        let pageSize = Double(vm_kernel_page_size)
+        guard kr == KERN_SUCCESS else { return (0, 0, 0, 0) }
         let wired = Double(stats.wire_count) * pageSize
         let compressed = Double(stats.compressor_page_count) * pageSize
         // App Memory = anonymous pages (internal_page_count), matching Activity
         // Monitor's "App Memory" (purgeable included).
         let app = Double(stats.internal_page_count) * pageSize
-        var total: UInt64 = 0
-        var size = MemoryLayout<UInt64>.size
-        sysctlbyname("hw.memsize", &total, &size, nil, 0)
-        guard total > 0 else { return (0, 0, 0, 0, 0) }
+        guard totalMemory > 0 else { return (0, 0, 0, 0) }
         let used = app + wired + compressed
-        let pct = min(100, used / Double(total) * 100)
-        let pressure = min(100, (wired + compressed) / Double(total) * 100)
-        return (pct, pressure, app, wired, compressed)
+        let pct = min(100, used / totalMemory * 100)
+        return (pct, app, wired, compressed)
     }
 
     // MARK: Disk — root volume; available counts purgeable as free (Finder/RunCat).
 
-    private func disk() -> (percent: Double, used: Double, total: Double) {
+    private func disk() -> (percent: Double, used: Double, total: Double, available: Bool) {
         let url = URL(fileURLWithPath: "/")
         guard let v = try? url.resourceValues(
             forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey,
                       .volumeAvailableCapacityForImportantUsageKey]),
             let total = v.volumeTotalCapacity, total > 0
-        else { return (0, 0, 0) }
-        return MetricMath.diskUsage(
+        else { return (0, 0, 0, false) }
+        let usage = MetricMath.diskUsage(
             total: Int64(total),
             importantAvailable: v.volumeAvailableCapacityForImportantUsage,
             regularAvailable: v.volumeAvailableCapacity.map(Int64.init))
+        return (usage.percent, usage.used, usage.total, true)
     }
 
     // MARK: Network — bytes/s up & down across physical interfaces
 
-    private func network() -> (down: Double, up: Double) {
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0 else { return (0, 0) }
-        defer { freeifaddrs(ifaddr) }
-
-        var rx: UInt64 = 0
-        var tx: UInt64 = 0
-        var ptr = ifaddr
-        while let p = ptr {
-            defer { ptr = p.pointee.ifa_next }
-            let flags = Int32(p.pointee.ifa_flags)
-            guard (flags & IFF_UP) != 0,
-                p.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_LINK)
-            else { continue }
-            let name = String(cString: p.pointee.ifa_name)
-            if name.hasPrefix("lo") || name.hasPrefix("utun") || name.hasPrefix("gif")
-                || name.hasPrefix("stf") { continue }
-            if let data = p.pointee.ifa_data?.assumingMemoryBound(to: if_data.self) {
-                rx &+= UInt64(data.pointee.ifi_ibytes)
-                tx &+= UInt64(data.pointee.ifi_obytes)
-            }
-        }
+    private func network(interface: String?) -> (down: Double, up: Double, available: Bool) {
+        guard let interface else { return (0, 0, false) }
+        guard let counters = networkCounters64(interface: interface) else { return (0, 0, false) }
+        let rx = counters.rx
+        let tx = counters.tx
+        let identity = interface
 
         let now = ProcessInfo.processInfo.systemUptime
-        defer { prevRx = rx; prevTx = tx; prevNetTime = now; netPrimed = true }
-        guard netPrimed else { return (0, 0) }
+        defer {
+            prevRx = rx
+            prevTx = tx
+            prevNetTime = now
+            prevNetInterface = identity
+            netPrimed = true
+        }
+        guard netPrimed, prevNetInterface == identity else {
+            netEMAPrimed = false
+            return (0, 0, false)
+        }
         let dt = now - prevNetTime
-        guard dt > 0 else { return (0, 0) }
-        // ifi_*bytes are 32-bit and can wrap; clamp negative deltas to 0.
-        let down = rx >= prevRx ? Double(rx - prevRx) / dt : 0
-        let up = tx >= prevTx ? Double(tx - prevTx) / dt : 0
+        // A long gap means the menu was closed or the Mac slept. Re-prime instead
+        // of showing a long-term average as though it were the current rate.
+        guard dt > 0, dt <= 3, rx >= prevRx, tx >= prevTx else {
+            netEMAPrimed = false
+            return (0, 0, false)
+        }
+        let down = Double(rx - prevRx) / dt
+        let up = Double(tx - prevTx) / dt
         if netEMAPrimed {
             downEMA = downEMA * emaAlpha + down * (1 - emaAlpha)
             upEMA = upEMA * emaAlpha + up * (1 - emaAlpha)
@@ -343,7 +377,65 @@ final class SystemSampler {
             upEMA = up
             netEMAPrimed = true
         }
-        return (downEMA, upEMA)
+        return (downEMA, upEMA, true)
+    }
+
+    /// `getifaddrs().ifa_data` exposes 32-bit byte counters that wrap after 4 GiB.
+    /// NET_RT_IFLIST2 provides `if_data64`, which remains stable during sustained
+    /// high-speed transfers.
+    private func networkCounters64(interface wanted: String) -> (rx: UInt64, tx: UInt64)? {
+        var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
+        var length = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &length, nil, 0) == 0, length > 0 else {
+            return nil
+        }
+
+        var bytes = [UInt8](repeating: 0, count: length)
+        let readResult = bytes.withUnsafeMutableBytes { raw in
+            sysctl(&mib, UInt32(mib.count), raw.baseAddress, &length, nil, 0)
+        }
+        guard readResult == 0 else { return nil }
+
+        var rx: UInt64 = 0
+        var tx: UInt64 = 0
+        var matched = false
+        bytes.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var offset = 0
+            while offset + MemoryLayout<if_msghdr>.size <= length {
+                var header = if_msghdr()
+                memcpy(&header, base.advanced(by: offset), MemoryLayout<if_msghdr>.size)
+                let messageLength = Int(header.ifm_msglen)
+                guard messageLength > 0, offset + messageLength <= length else { break }
+
+                if header.ifm_type == RTM_IFINFO2,
+                   messageLength >= MemoryLayout<if_msghdr2>.size {
+                    var message = if_msghdr2()
+                    memcpy(&message, base.advanced(by: offset), MemoryLayout<if_msghdr2>.size)
+                    let flags = Int32(message.ifm_flags)
+                    let name = interfaceName(index: UInt32(message.ifm_index))
+                    if (flags & IFF_UP) != 0, let name, shouldCountInterface(name, wanted: wanted) {
+                        matched = true
+                        rx &+= message.ifm_data.ifi_ibytes
+                        tx &+= message.ifm_data.ifi_obytes
+                    }
+                }
+                offset += messageLength
+            }
+        }
+        return matched ? (rx, tx) : nil
+    }
+
+    private func interfaceName(index: UInt32) -> String? {
+        var name = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
+        return name.withUnsafeMutableBufferPointer { buffer in
+            guard if_indextoname(index, buffer.baseAddress) != nil else { return nil }
+            return String(cString: buffer.baseAddress!)
+        }
+    }
+
+    private func shouldCountInterface(_ name: String, wanted: String) -> Bool {
+        name == wanted
     }
 
     // MARK: Battery — AppleSmartBattery (raw mAh → decimal %, health, cycles, temp)
@@ -373,7 +465,9 @@ final class SystemSampler {
         let temp = (d["Temperature"] as? Int).map { Double($0) / 100 }.flatMap { (0...80).contains($0) ? $0 : nil }
 
         var pct: Double? = nil
-        if let c = curCap, let m = maxCap, m > 0 { pct = Double(c) / Double(m) * 100 }
+        if let c = curCap, let m = maxCap, m > 0 {
+            pct = max(0, min(100, Double(c) / Double(m) * 100))
+        }
         // Battery health (= System Settings "Maximum Capacity"): raw max vs design.
         var health: Double? = nil
         if let m = rawMax, let dz = design, dz > 0 { health = min(100, Double(m) / Double(dz) * 100) }
@@ -382,7 +476,7 @@ final class SystemSampler {
 
     // MARK: Network type + local IPv4 of the primary interface
 
-    private func networkInfo() -> (type: String, ip: String) {
+    private func networkInfo() -> (type: String, ip: String, bsd: String?) {
         var bsd: String?
         if let store = SCDynamicStoreCreate(nil, "BusyCat" as CFString, nil, nil),
             let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString)
@@ -391,7 +485,7 @@ final class SystemSampler {
         }
         let ip = ipv4(for: bsd)
         let type = bsd.flatMap(interfaceDisplayName) ?? "—"
-        return (type, ip)
+        return (type, ip, bsd)
     }
 
     private func ipv4(for iface: String?) -> String {
@@ -418,6 +512,9 @@ final class SystemSampler {
     private func interfaceDisplayName(_ bsd: String) -> String? {
         guard let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else { return nil }
         for i in all where (SCNetworkInterfaceGetBSDName(i) as String?) == bsd {
+            let kind = SCNetworkInterfaceGetInterfaceType(i) as String?
+            if kind == (kSCNetworkInterfaceTypeIEEE80211 as String) { return "Wi-Fi" }
+            if kind == (kSCNetworkInterfaceTypeEthernet as String) { return "Ethernet" }
             return SCNetworkInterfaceGetLocalizedDisplayName(i) as String?
         }
         return nil
@@ -437,7 +534,7 @@ enum ThermalReader {
         var cpuAvailableCPUs: Int? = nil
     }
 
-    private static let client: CFTypeRef? = IOHIDEventSystemClientCreate(kCFAllocatorDefault)?
+    private static let client: CFTypeRef? = HIDPrivateAPI.create?(kCFAllocatorDefault)?
         .takeRetainedValue()
     private static var cachedPMSetTherm = ""
     private static var nextPMSetRefresh = 0.0
@@ -521,20 +618,25 @@ enum ThermalReader {
     }
 
     private static func temperatureSensors() -> [TemperatureSensor] {
-        guard let client else { return [] }
+        guard let client,
+              let setMatching = HIDPrivateAPI.setMatching,
+              let copyServices = HIDPrivateAPI.copyServices,
+              let copyEvent = HIDPrivateAPI.copyEvent,
+              let getFloatValue = HIDPrivateAPI.getFloatValue
+        else { return [] }
         let matching: CFDictionary = [
             "PrimaryUsagePage" as CFString: 0xFF00 as CFNumber,
             "PrimaryUsage" as CFString: 0x05 as CFNumber,
         ] as CFDictionary
-        IOHIDEventSystemClientSetMatching(client, matching)
-        guard let services = IOHIDEventSystemClientCopyServices(client)?.takeRetainedValue() as? [CFTypeRef]
+        setMatching(client, matching)
+        guard let services = copyServices(client)?.takeRetainedValue() as? [CFTypeRef]
         else { return [] }
 
         var values: [String: Double] = [:]
         for service in services {
-            guard let event = IOHIDServiceClientCopyEvent(service, 0x0F, 0, 0)?.takeRetainedValue()
+            guard let event = copyEvent(service, 0x0F, 0, 0)?.takeRetainedValue()
             else { continue }
-            let temp = IOHIDEventGetFloatValue(event, 0x0F << 16)
+            let temp = getFloatValue(event, 0x0F << 16)
             guard temp > 0, temp < 120 else { continue }
             let name = sensorName(for: service) ?? "Unknown"
             values[name] = temp
@@ -543,11 +645,12 @@ enum ThermalReader {
     }
 
     private static func sensorName(for service: CFTypeRef) -> String? {
-        if let product = IOHIDServiceClientCopyProperty(service, "Product" as CFString)?
+        guard let copyProperty = HIDPrivateAPI.copyProperty else { return nil }
+        if let product = copyProperty(service, "Product" as CFString)?
             .takeRetainedValue() as? String {
             return product
         }
-        if let location = IOHIDServiceClientCopyProperty(service, "LocationID" as CFString)?
+        if let location = copyProperty(service, "LocationID" as CFString)?
             .takeRetainedValue() as? NSNumber {
             return String(format: "Unknown-FF00-05-%llX", location.uint64Value)
         }
@@ -773,13 +876,13 @@ enum GPUReader {
     /// above Renderer. So `Device − Renderer` isolates real compute — a brief
     /// menu/Mission-Control composite ≈ 0, an embedding stays high — far better
     /// than a fixed baseline that big menu renders could exceed.
-    static func stats() -> (raw: Double, render: Double, subtractRenderer: Bool) {
+    static func stats() -> (raw: Double, render: Double, subtractRenderer: Bool, available: Bool) {
         if cachedService == 0 { cachedService = findAccelerator() }
-        guard cachedService != 0 else { return (0, 0, true) }
+        guard cachedService != 0 else { return (0, 0, true, false) }
         guard let perf = perfStats(cachedService) else {
             IOObjectRelease(cachedService)  // service vanished — re-match next time
             cachedService = 0
-            return (0, 0, true)
+            return (0, 0, true, false)
         }
         return counters(from: perf)
     }
@@ -814,7 +917,7 @@ enum GPUReader {
     }
 
     static func counters(from perf: [String: Any])
-        -> (raw: Double, render: Double, subtractRenderer: Bool) {
+        -> (raw: Double, render: Double, subtractRenderer: Bool, available: Bool) {
         func percent(_ key: String) -> Double? {
             guard let value = perf[key] as? NSNumber else { return nil }
             return max(0, min(100, value.doubleValue))
@@ -826,16 +929,21 @@ enum GPUReader {
         // ~10-15% just from normal menu-bar compositing (including our own cat),
         // which would keep the cat sprinting at idle and waste CPU.
         if let raw = percent("Device Utilization %") {
-            return (raw, render, true)
+            return (raw, render, true, true)
         }
 
         // Best-effort display fallback only. These GPUs do not expose enough
         // information to guarantee Device−Renderer compute isolation, so don't
         // subtract renderer again from a value that may already be graphics-only.
         if let activity = percent("GPU Activity(%)") {
-            return (activity, render, false)
+            return (activity, render, false, true)
         }
-        let pipeline = max(render, percent("Tiler Utilization %") ?? 0)
-        return (pipeline, render, false)
+        if let tiler = percent("Tiler Utilization %") {
+            return (max(render, tiler), render, false, true)
+        }
+        if perf["Renderer Utilization %"] != nil {
+            return (render, render, false, true)
+        }
+        return (0, 0, false, false)
     }
 }

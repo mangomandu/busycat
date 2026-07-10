@@ -4,8 +4,11 @@ cask "busycat" do
 
   url "https://github.com/mangomandu/busycat/releases/download/v#{version}/BusyCat-#{version}-macOS.dmg"
   name "BusyCat"
-  desc "Menu bar cat whose speed reflects CPU and GPU load"
+  desc "Menu bar cat driven by CPU and GPU compute load"
   homepage "https://github.com/mangomandu/busycat"
+
+  depends_on arch: :arm64
+  depends_on macos: :ventura
 
   livecheck do
     url :url
@@ -22,5 +25,6 @@ cask "busycat" do
   caveats <<~EOS
     BusyCat is not notarized yet. If macOS blocks the first launch, open
     System Settings > Privacy & Security and choose "Open Anyway".
+    BusyCat currently supports Apple Silicon Macs only.
   EOS
 end

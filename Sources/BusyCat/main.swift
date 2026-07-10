@@ -10,9 +10,10 @@ if CommandLine.arguments.contains("--metrics") {
     print(String(format: "CPU=%.1f%% (sys %.1f / usr %.1f / idle %.1f)",
                  m.cpu, m.cpuSystem, m.cpuUser, max(0, 100 - m.cpu)))
     print(String(format: "GPU compute=%.1f%%  raw=%.0f%%  render=%.0f%%",
-                 m.gpu, m.gpuRaw, m.gpuRender))
-    print(String(format: "MEM=%.1f%%  press=%.1f%%  app=%.1fGB wired=%.1fGB comp=%.0fMB",
-                 m.memory, m.memPressure, m.memApp / 1e9, m.memWired / 1e9, m.memCompressed / 1e6))
+                 m.gpuCompute, m.gpuRaw, m.gpuRender))
+    print(String(format: "MEM=%.1f%%  pressure=%@  app=%.1fGB wired=%.1fGB comp=%.0fMB",
+                 m.memory, String(describing: m.memoryPressure),
+                 m.memApp / 1e9, m.memWired / 1e9, m.memCompressed / 1e6))
     print(String(format: "DISK=%.1f%%  %.1f/%.1f GB", m.disk, m.diskUsed / 1e9, m.diskTotal / 1e9))
     print(String(format: "NET %@  ip=%@  ↓%.0fB/s ↑%.0fB/s",
                  m.netType, m.localIP, m.netDown, m.netUp))
@@ -34,12 +35,14 @@ if CommandLine.arguments.contains("--metrics") {
 // Debug: render the custom stats panel to a PNG (on a menu-like dark bg) so the
 // layout can be eyeballed without opening the live menu.
 if CommandLine.arguments.contains("--statsdump") {
+    _ = NSApplication.shared
     var m = Metrics()
     m.cpu = 5.6; m.cpuSystem = 2.9; m.cpuUser = 2.7
-    m.gpu = 0; m.gpuRaw = 0; m.gpuRender = 0
-    m.memory = 40.5; m.memPressure = 6.2
+    m.gpuCompute = 0; m.gpuRaw = 0; m.gpuRender = 0; m.gpuAvailable = true
+    m.memory = 40.5; m.memoryPressure = .normal
     m.memApp = 17.7e9; m.memWired = 2.8e9; m.memCompressed = 323.7e6
     m.disk = 10.4; m.diskUsed = 103.6e9; m.diskTotal = 994.6e9
+    m.diskAvailable = true; m.netRateAvailable = true
     m.battery = 99; m.onAC = false; m.charging = false
     m.batHealth = 100; m.batCycles = 3; m.batTemp = 30.1
     m.thermalState = ProcessInfo.ThermalState.nominal.rawValue
@@ -62,17 +65,37 @@ if CommandLine.arguments.contains("--statsdump") {
     let dark = NSAppearance(named: .darkAqua)!
     v.appearance = dark
     let size = v.frame.size
-    let img = NSImage(size: size, flipped: true) { rect in
+    let image = NSImage(size: size, flipped: true) { rect in
         dark.performAsCurrentDrawingAppearance {
-            NSColor(white: 0.15, alpha: 1).setFill(); rect.fill()
+            NSColor(white: 0.15, alpha: 1).setFill()
+            rect.fill()
             v.draw(rect)
         }
         return true
     }
-    if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-        let png = rep.representation(using: .png, properties: [:]) {
+    let scale: CGFloat = 2
+    let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: Int(size.width * scale),
+        pixelsHigh: Int(size.height * scale),
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0)
+    rep?.size = size
+    if let rep, let context = NSGraphicsContext(bitmapImageRep: rep) {
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        image.draw(in: NSRect(origin: .zero, size: size),
+                   from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    if let rep, let png = rep.representation(using: .png, properties: [:]) {
         try? png.write(to: URL(fileURLWithPath: "/tmp/stats.png"))
-        print("wrote /tmp/stats.png \(size)")
+        print("wrote /tmp/stats.png \(rep.pixelsWide)x\(rep.pixelsHigh)")
     }
     exit(0)
 }

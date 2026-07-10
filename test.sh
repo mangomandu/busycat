@@ -15,6 +15,8 @@ CACHE="$ROOT/.build/ModuleCache"
 mkdir -p "$CACHE"
 cd "$ROOT"
 
+"$ROOT/tools/check_release_consistency.sh"
+
 DEVDIR="$(xcode-select -p)"
 FW="$DEVDIR/Library/Developer/Frameworks"
 INTEROP="$DEVDIR/Library/Developer/usr/lib"

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check release metadata
+        run: ./tools/check_release_consistency.sh
+      - name: Run tests
+        run: swift test
+      - name: Build release with warnings as errors
+        run: swift build -c release -Xswiftc -warnings-as-errors
+      - name: Verify Apple Silicon binary
+        run: file .build/release/BusyCat | grep -q arm64
+      - name: Verify private temperature symbols are optional
+        run: |
+          if nm -u .build/release/BusyCat | grep -E 'IOHID(EventSystemClient|ServiceClient|EventGetFloatValue)'; then
+            echo "Private IOHID symbols must be resolved dynamically" >&2
+            exit 1
+          fi
