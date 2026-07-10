@@ -32,73 +32,16 @@ if CommandLine.arguments.contains("--metrics") {
     exit(0)
 }
 
-// Debug: render the custom stats panel to a PNG (on a menu-like dark bg) so the
-// layout can be eyeballed without opening the live menu.
-if CommandLine.arguments.contains("--statsdump") {
-    _ = NSApplication.shared
-    var m = Metrics()
-    m.cpu = 5.6; m.cpuSystem = 2.9; m.cpuUser = 2.7
-    m.gpuCompute = 0; m.gpuRaw = 0; m.gpuRender = 0; m.gpuAvailable = true
-    m.memory = 40.5; m.memoryPressure = .normal
-    m.memApp = 17.7e9; m.memWired = 2.8e9; m.memCompressed = 323.7e6
-    m.disk = 10.4; m.diskUsed = 103.6e9; m.diskTotal = 994.6e9
-    m.diskAvailable = true; m.netRateAvailable = true
-    m.battery = 99; m.onAC = false; m.charging = false
-    m.batHealth = 100; m.batCycles = 3; m.batTemp = 30.1
-    m.thermalState = ProcessInfo.ThermalState.nominal.rawValue
-    m.thermalTemp = 61.0; m.thermalTempSensor = "TCMb · SMC"; m.thermalCPUTemp = 51.8
-    m.cpuSpeedLimit = 100; m.cpuSchedulerLimit = 100
-    m.cpuAvailableCPUs = 10; m.thermalSensorCount = 58
-    m.thermalTopSensors = [
-        TemperatureSensor(name: "TCMb", value: 61.0, source: "SMC"),
-        TemperatureSensor(name: "pACC", value: 51.8, source: "IOHID"),
-        TemperatureSensor(name: "PMU tcal", value: 51.0, source: "IOHID"),
-        TemperatureSensor(name: "gas gauge battery", value: 30.1, source: "IOHID"),
-    ]
-    m.netType = "Wi-Fi"; m.localIP = "192.168.0.2"; m.netUp = 819; m.netDown = 409
-    let v = StatsView()
-    v.update(m, history: (0..<60).map { 20 + 18 * sin(Double($0) / 4) },
-             meterColor: .systemGray)
-    // Render under dark appearance so the view's dynamic colors (labelColor,
-    // secondaryLabelColor, tinted icons) resolve to their light-on-dark variants
-    // — otherwise dark text on the dark menu bg comes out as unreadable gray.
-    let dark = NSAppearance(named: .darkAqua)!
-    v.appearance = dark
-    let size = v.frame.size
-    let image = NSImage(size: size, flipped: true) { rect in
-        dark.performAsCurrentDrawingAppearance {
-            NSColor(white: 0.15, alpha: 1).setFill()
-            rect.fill()
-            v.draw(rect)
-        }
-        return true
-    }
-    let scale: CGFloat = 2
-    let rep = NSBitmapImageRep(
-        bitmapDataPlanes: nil,
-        pixelsWide: Int(size.width * scale),
-        pixelsHigh: Int(size.height * scale),
-        bitsPerSample: 8,
-        samplesPerPixel: 4,
-        hasAlpha: true,
-        isPlanar: false,
-        colorSpaceName: .deviceRGB,
-        bytesPerRow: 0,
-        bitsPerPixel: 0)
-    rep?.size = size
-    if let rep, let context = NSGraphicsContext(bitmapImageRep: rep) {
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        image.draw(in: NSRect(origin: .zero, size: size),
-                   from: .zero, operation: .copy, fraction: 1)
-        NSGraphicsContext.restoreGraphicsState()
-    }
-    if let rep, let png = rep.representation(using: .png, properties: [:]) {
-        try? png.write(to: URL(fileURLWithPath: "/tmp/stats.png"))
-        print("wrote /tmp/stats.png \(rep.pixelsWide)x\(rep.pixelsHigh)")
-    }
-    exit(0)
+#if BUSYCAT_DEVELOPMENT_TOOLS
+if let index = CommandLine.arguments.firstIndex(of: "--statsdump") {
+    let next = CommandLine.arguments.index(after: index)
+    let outputPath = next < CommandLine.arguments.endIndex
+        && !CommandLine.arguments[next].hasPrefix("-")
+        ? CommandLine.arguments[next]
+        : "/tmp/stats.png"
+    exit(renderDevelopmentStatsPanel(to: URL(fileURLWithPath: outputPath)) ? 0 : 1)
 }
+#endif
 
 let delegate = AppDelegate()
 NSApplication.shared.delegate = delegate

@@ -132,6 +132,7 @@ macOS Swift 툴체인(Xcode Command Line Tools)만 있으면 됩니다. 추가 �
 ./make_app.sh            # BusyCat.app 빌드 (애드혹 서명)
 ./make_app.sh --install  # 빌드 + /Applications 복사 + 재실행
 ./make_dmg.sh            # BusyCat-...-macOS.dmg 빌드
+./tools/render_stats_panels.sh  # README 한·영 상세 패널 다시 생성
 ```
 
 종료는 고양이 메뉴 → **바쁘냥 종료** (⌘Q). 로그인 시 자동 실행은 바쁘냥의

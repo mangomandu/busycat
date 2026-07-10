@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "BusyCat",
-            path: "Sources/BusyCat"
+            path: "Sources/BusyCat",
+            swiftSettings: [
+                .define("BUSYCAT_DEVELOPMENT_TOOLS", .when(configuration: .debug)),
+            ]
         ),
         .testTarget(
             name: "BusyCatTests",

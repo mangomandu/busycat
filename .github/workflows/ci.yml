@@ -26,3 +26,9 @@ jobs:
             echo "Private IOHID symbols must be resolved dynamically" >&2
             exit 1
           fi
+      - name: Verify development renderer is excluded
+        run: |
+          if strings .build/release/BusyCat | grep -F -- '--statsdump'; then
+            echo "Development panel renderer leaked into the release binary" >&2
+            exit 1
+          fi
