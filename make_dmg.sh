@@ -23,7 +23,7 @@ fi
 
 ./make_app.sh
 
-if ! lipo -verify_arch arm64 "$APP_BUNDLE/Contents/MacOS/$APP_NAME"; then
+if ! lipo "$APP_BUNDLE/Contents/MacOS/$APP_NAME" -verify_arch arm64; then
     echo "BusyCat releases must contain an arm64 binary." >&2
     exit 1
 fi
