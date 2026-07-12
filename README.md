@@ -114,6 +114,13 @@ brew tap mangomandu/busycat https://github.com/mangomandu/busycat
 brew install --cask busycat
 ```
 
+If Homebrew reports that the tap is untrusted, trust it once and retry:
+
+```bash
+brew trust mangomandu/busycat
+brew install --cask busycat
+```
+
 BusyCat is not notarized yet. On first launch, macOS may block it; if that
 happens, open System Settings → Privacy & Security and choose **Open Anyway**.
 
