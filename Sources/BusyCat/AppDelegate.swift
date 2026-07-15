@@ -110,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
     private var settingsPanel: NSPanel?
     private var thermalPopover: NSPopover?
+    private var thermalPopoverDirty = true
     private var firstLaunchPopover: NSPopover?
     private var updateCheckInFlight = false
     private var lastUpdateAttempt = Date.distantPast
@@ -500,17 +501,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showThermalPopover(relativeTo rect: NSRect) {
         guard menuOpen else { return }
         if thermalPopover?.isShown == true { return }
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentViewController = NSViewController()
-        popover.contentViewController?.view = thermalPopoverView(for: latest)
-        thermalPopover = popover
+        let popover: NSPopover
+        if let existing = thermalPopover {
+            popover = existing
+        } else {
+            popover = NSPopover()
+            popover.behavior = .transient
+            popover.contentViewController = NSViewController()
+            thermalPopover = popover
+        }
+        if thermalPopoverDirty {
+            popover.contentViewController?.view = thermalPopoverView(for: latest)
+            thermalPopoverDirty = false
+        }
         popover.show(relativeTo: rect, of: statsView, preferredEdge: .maxX)
     }
 
     private func hideThermalPopover() {
         thermalPopover?.close()
-        thermalPopover = nil
     }
 
     private func thermalPopoverView(for m: Metrics) -> NSView {
@@ -741,7 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.applySample(sample, full: full)
             if self.fullSamplePending {
                 self.fullSamplePending = false
-                self.requestSample(full: true)
+                if self.menuOpen { self.requestSample(full: true) }
             }
         }
     }
@@ -749,6 +757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applySample(_ sample: Metrics, full: Bool) {
         if full {
             latest = sample
+            thermalPopoverDirty = true
         } else {
             latest.cpu = sample.cpu
             latest.cpuSystem = sample.cpuSystem
@@ -1207,6 +1216,7 @@ extension AppDelegate: NSMenuDelegate {
 
     func menuDidClose(_ menu: NSMenu) {
         menuOpen = false
+        fullSamplePending = false
         hideThermalPopover()
         statsView.resetThermalHover()
     }

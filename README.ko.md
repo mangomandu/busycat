@@ -21,7 +21,8 @@
 
 RunCat은 CPU만 봐서, GPU를 쓰는 작업(예: Apple Silicon에서 ML 임베딩 돌릴 때)에는
 고양이가 한가해 보입니다. 바쁘냥은 **`max(CPU, GPU 연산)`** — 둘 중 더 바쁜 쪽으로
-고양이를 달리게 합니다. 여기서 GPU 값은 화면 합성을 뺀 **GPU 연산 부하**입니다.
+고양이를 달리게 합니다. 여기서 GPU 값은 그래픽/화면 렌더링을 뺀 **GPU 연산
+부하**입니다.
 
 RunCat이 GPU를 못 넣는 건 **앱스토어 = 샌드박스** 앱이라 GPU·온도 정보 접근이
 막혀 있기 때문입니다(개발자가 FAQ에서 명시). 바쁘냥은 앱스토어 **밖** 빌드라 IOKit으로
@@ -163,7 +164,7 @@ git pull
 
 - **GPU 연산 부하** (Apple Silicon, `sudo` 불필요): IOKit `IOAccelerator` →
   `PerformanceStatistics`. 연산 부하 = `Device Utilization %` − `Renderer
-  Utilization %`. 이렇게 빼면 순수 연산(Metal/MPS)이 그래픽/컴포지팅과 분리됩니다 —
+  Utilization %`. 이렇게 빼면 순수 연산(Metal/MPS)이 그래픽/화면 렌더링과 분리됩니다 —
   ML 작업 때 올라가는 게 바로 이 값이고, 활성 상태 보기와 교차검증했습니다.
 - **CPU**: `host_statistics`의 `HOST_CPU_LOAD_INFO` 틱 델타. EMA로 부드럽게 해서
   활성 상태 보기와 비슷한 느낌으로.

@@ -11,6 +11,9 @@ final class StatsView: NSView {
     private var meterTint = NSColor.systemGray
     private var thermalRect: NSRect = .zero
     private var thermalHovering = false
+    private var thermalPointerInside = false
+    private var thermalHoverWorkItem: DispatchWorkItem?
+    private let thermalHoverDelay: TimeInterval = 0.2
 
     private let panelWidth: CGFloat = 250
     private let iconX: CGFloat = 18
@@ -147,7 +150,7 @@ final class StatsView: NSView {
             ? appText("GPU 전체: \(p0(m.gpuRaw))", "GPU total: \(p0(m.gpuRaw))")
             : appText("GPU: 사용 불가", "GPU: Unavailable")
         let gpuSubs = m.gpuAvailable
-            ? ["\(appText("화면 합성", "Screen compositing")): \(p0(m.gpuRender))",
+            ? ["\(appText("그래픽/화면 렌더링", "Graphics / display rendering")): \(p0(m.gpuRender))",
                "\(appText("연산 부하 (고양이)", "Compute load (cat)")): \(p1(m.gpuCompute))"]
             : [appText("이 Mac에서 GPU 카운터를 읽지 못했습니다.", "GPU counters could not be read on this Mac.")]
         let diskTitle = m.diskAvailable
@@ -222,7 +225,7 @@ final class StatsView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        setThermalHover(false)
+        updateThermalHover(inside: false)
     }
 
     // MARK: Drawing
@@ -265,7 +268,26 @@ final class StatsView: NSView {
     }
 
     private func updateThermalHover(with point: NSPoint) {
-        setThermalHover(!thermalRect.isEmpty && thermalRect.contains(point))
+        updateThermalHover(inside: !thermalRect.isEmpty && thermalRect.contains(point))
+    }
+
+    private func updateThermalHover(inside: Bool) {
+        thermalPointerInside = inside
+        if !inside {
+            thermalHoverWorkItem?.cancel()
+            thermalHoverWorkItem = nil
+            setThermalHover(false)
+            return
+        }
+        guard !thermalHovering, thermalHoverWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.thermalHoverWorkItem = nil
+            guard self.thermalPointerInside else { return }
+            self.setThermalHover(true)
+        }
+        thermalHoverWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + thermalHoverDelay, execute: workItem)
     }
 
     private func setThermalHover(_ hovering: Bool) {
@@ -275,6 +297,9 @@ final class StatsView: NSView {
     }
 
     func resetThermalHover() {
+        thermalHoverWorkItem?.cancel()
+        thermalHoverWorkItem = nil
+        thermalPointerInside = false
         thermalHovering = false
     }
 

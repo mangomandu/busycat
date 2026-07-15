@@ -22,7 +22,7 @@ and embeddings makes the cat run too.
 RunCat only watches the CPU, so GPU-bound work — for example running ML
 embeddings on Apple Silicon — leaves the cat looking idle. BusyCat drives the cat
 from **`max(CPU, GPU compute)`**: whatever is busiest. The GPU value excludes
-screen compositing and represents estimated compute load.
+graphics/display rendering and represents estimated compute load.
 
 RunCat can't add GPU support because it's a sandboxed App Store app (no GPU or
 thermal access — the developer says so in the FAQ). BusyCat ships *outside* the
@@ -170,7 +170,7 @@ git pull
 - **GPU compute** (Apple Silicon, no `sudo`): IOKit `IOAccelerator` →
   `PerformanceStatistics`. Compute load = `Device Utilization %` − `Renderer
   Utilization %`, which isolates real compute (Metal/MPS) from
-  graphics/compositing — this is what climbs during ML work, cross-checked
+  graphics/display rendering — this is what climbs during ML work, cross-checked
   against Activity Monitor.
 - **CPU**: `host_statistics` `HOST_CPU_LOAD_INFO` tick deltas, EMA-smoothed so it
   tracks Activity Monitor's feel.

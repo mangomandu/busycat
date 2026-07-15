@@ -45,8 +45,8 @@ struct Metrics {
     var cpuUser: Double = 0      // %
     // GPU
     var gpuCompute: Double = 0   // % compute estimate (renderer removed) — drives the cat
-    var gpuRaw: Double = 0       // % raw Device Utilization (incl. compositing)
-    var gpuRender: Double = 0    // % Renderer (screen compositing / graphics)
+    var gpuRaw: Double = 0       // % raw Device Utilization (incl. graphics/display rendering)
+    var gpuRender: Double = 0    // % Renderer (graphics / display rendering)
     var gpuAvailable: Bool = false
     // Memory (Activity Monitor "Memory Used" = App + Wired + Compressed)
     var memory: Double = 0       // % used
@@ -868,10 +868,10 @@ enum GPUReader {
     private static var cachedService: io_object_t = 0
 
     /// Returns the GPU breakdown in one registry read:
-    ///   - raw:     "Device Utilization %" (total busy, incl. compositing) — matches AM
-    ///   - render:  "Renderer Utilization %" (screen compositing / graphics)
+    ///   - raw:     "Device Utilization %" (total busy, incl. graphics/display rendering) — matches AM
+    ///   - render:  "Renderer Utilization %" (graphics / display rendering)
     ///
-    /// Key observation: screen compositing drives Device and Renderer together
+    /// Key observation: graphics/display rendering drives Device and Renderer together
     /// (Device ≈ Renderer), while Metal compute (embeddings) drives Device far
     /// above Renderer. So `Device − Renderer` isolates real compute — a brief
     /// menu/Mission-Control composite ≈ 0, an embedding stays high — far better
