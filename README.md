@@ -10,7 +10,7 @@ and embeddings makes the cat run too.
 🇰🇷 [한국어 README](README.ko.md)
 
 <p align="center">
-  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.4-macOS.dmg"><strong>Download for Apple Silicon Mac (.dmg)</strong></a>
+  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.5-macOS.dmg"><strong>Download for Apple Silicon Mac (.dmg)</strong></a>
   <br>
   <sub>Open the DMG, then drag <code>BusyCat.app</code> to <code>Applications</code>. See <a href="https://github.com/mangomandu/busycat/releases/latest">GitHub Releases</a> for release notes.</sub>
 </p>
@@ -100,7 +100,7 @@ The current build requires an **Apple Silicon Mac (M1 or newer) running macOS 13
 Ventura or later**. Intel Macs are not supported.
 
 1. Download the latest DMG:
-   [BusyCat-1.1.4-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.4-macOS.dmg)
+   [BusyCat-1.1.5-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.5-macOS.dmg)
 2. Open the DMG.
 3. Drag `BusyCat.app` to `Applications`.
 
