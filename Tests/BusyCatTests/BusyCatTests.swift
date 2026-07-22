@@ -4,6 +4,13 @@ import Testing
 
 @Suite("BusyCat regression tests")
 struct BusyCatTests {
+    @Test @MainActor func embeddedCatFramesDecodeAtExpectedSize() {
+        let frames = CatFrames.load(height: 18)
+        #expect(frames.count == 5)
+        #expect(frames.allSatisfy { $0.size.width == 28 && $0.size.height == 18 })
+        #expect(CatFrames.load(height: 18, flipped: true).count == 5)
+    }
+
     @Test func diskUsageFallsBackWhenImportantCapacityIsZero() {
         let result = MetricMath.diskUsage(
             total: 1_000, importantAvailable: 0, regularAvailable: 800)!
@@ -35,11 +42,29 @@ struct BusyCatTests {
         #expect(abs(SpeedCurve.interval(forUsage: 100) - 0.02) < 0.0001)
         #expect(abs(SpeedCurve.interval(forUsage: 500) - 0.02) < 0.0001)
         #expect(abs(SpeedCurve.interval(forUsage: 100, maximumFPS: 20) - 0.05) < 0.0001)
+        #expect(abs(SpeedCurve.interval(forUsage: .nan) - 0.4) < 0.0001)
+        #expect(abs(SpeedCurve.interval(forUsage: 100, maximumFPS: .nan) - 0.02) < 0.0001)
     }
 
     @Test func speedUsageMatchesInvertSetting() {
         #expect(MetricMath.speedUsage(base: 80, inverted: false) == 80)
         #expect(MetricMath.speedUsage(base: 80, inverted: true) == 20)
+    }
+
+    @Test func metricHistoryClearsAcrossUnsampledGapsAndKeepsLimit() {
+        var history = [1.0, 2.0]
+        MetricMath.updateHistory(&history, sample: nil, limit: 3)
+        #expect(history.isEmpty)
+
+        for value in 1...4 {
+            MetricMath.updateHistory(&history, sample: Double(value), limit: 3)
+        }
+        #expect(history == [2, 3, 4])
+
+        MetricMath.updateHistory(&history, sample: 5, limit: 0)
+        #expect(history.isEmpty)
+        MetricMath.updateHistory(&history, sample: .nan)
+        #expect(history.isEmpty)
     }
 
     @Test func busiestDriverIgnoresUnavailableGPU() {
@@ -99,6 +124,12 @@ struct BusyCatTests {
     @Test func missingGPUCountersReportUnavailable() {
         let result = GPUReader.counters(from: [:])
         #expect(!result.available)
+
+        let malformed = GPUReader.counters(from: [
+            "Device Utilization %": Double.nan,
+            "Renderer Utilization %": "unknown",
+        ])
+        #expect(!malformed.available)
     }
 
     @Test func numericVersionComparison() {
@@ -110,6 +141,16 @@ struct BusyCatTests {
         #expect(!Updater.isNewer("1.0+build.2", than: "1.0+build.1"))
         #expect(Updater.isNewer("1.0", than: "1.0-rc.1"))
         #expect(Updater.isNewer("1.0-rc.10", than: "1.0-rc.2"))
+        #expect(Updater.isNewer("1.0-rc-2", than: "1.0-rc-1"))
+    }
+
+    @Test func malformedSemanticVersionsFailClosed() throws {
+        for tag in ["1.2+", "1.2+build+extra", "1.02", "1.2.3.4", "1.2-rc_1", "1.2-01"] {
+            let data = try JSONSerialization.data(withJSONObject: ["tag_name": tag])
+            #expect(Updater.interpretLatestRelease(
+                statusCode: 200, data: data, currentVersion: "1.1") == .failed)
+        }
+        #expect(!Updater.isNewer("1.2-999999999999999999999999", than: "1.1"))
     }
 
     @Test func updateResponseDistinguishesUpToDateAndFailure() throws {
@@ -163,6 +204,17 @@ struct BusyCatTests {
         #expect(result.scheduler == 100)
         #expect(result.available == 10)
         #expect(result.speed == 87)
+    }
+
+    @Test func pmsetThermalLimitsRejectImpossibleValues() {
+        let result = ThermalReader.parsePMSetTherm("""
+            CPU_Scheduler_Limit = 101
+            CPU_Available_CPUs  = 2048
+            CPU_Speed_Limit     = -1
+            """)
+        #expect(result.scheduler == nil)
+        #expect(result.available == nil)
+        #expect(result.speed == nil)
     }
 
     @Test func externalThermalCommandHasTimeout() {

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Run the BusyCat test suite.
 #
 # Why this wrapper exists: some standalone Command Line Tools releases ship
@@ -9,6 +9,7 @@
 # If you have full Xcode selected (`xcode-select -p` shows .../Xcode.app), a
 # plain `swift test` works and you don't need this — but this script still works.
 set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CACHE="$ROOT/.build/ModuleCache"

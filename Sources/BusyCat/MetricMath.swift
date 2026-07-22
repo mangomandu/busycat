@@ -43,6 +43,24 @@ enum MetricMath {
         inverted ? 100 - base : base
     }
 
+    /// Keep graph samples contiguous in time. When CPU sampling is disabled,
+    /// clearing the old history is more honest than repeating the last value and
+    /// presenting an hours-old flat line as the most recent 60 seconds.
+    static func updateHistory(
+        _ history: inout [Double],
+        sample: Double?,
+        limit: Int = 60
+    ) {
+        guard limit > 0, let sample, sample.isFinite else {
+            history.removeAll(keepingCapacity: true)
+            return
+        }
+        history.append(sample)
+        if history.count > limit {
+            history.removeFirst(history.count - limit)
+        }
+    }
+
     /// RAM fish gauge level from macOS' real system memory-pressure state.
     static func memoryFishLevel(pressure: MemoryPressureLevel, maxFish: Int = 5) -> Int {
         guard maxFish > 0 else { return 0 }
@@ -60,8 +78,9 @@ enum MetricMath {
 enum SpeedCurve {
     /// Half RunCat's animation rate: about 2.5 fps idle to 50 fps at 100%.
     static func interval(forUsage usage: Double, maximumFPS: Double = 50) -> TimeInterval {
-        let base = 0.4 / max(1.0, min(20.0, usage / 5.0))
-        guard maximumFPS > 0 else { return base }
+        let finiteUsage = usage.isFinite ? usage : 0
+        let base = 0.4 / max(1.0, min(20.0, finiteUsage / 5.0))
+        guard maximumFPS.isFinite, maximumFPS > 0 else { return base }
         return max(base, 1 / maximumFPS)
     }
 }

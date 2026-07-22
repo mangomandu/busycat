@@ -1,6 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Builds a drag-to-Applications DMG for BusyCat.
 set -euo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+umask 022
 cd "$(dirname "$0")"
 
 APP_NAME="BusyCat"
@@ -12,6 +14,7 @@ STAGE_DIR="$STAGE_ROOT/$APP_NAME-$VERSION"
 VOLUME_NAME="$APP_NAME $VERSION"
 APPLICATIONS_LINK="Applications"
 TEMP_DMG="$STAGE_ROOT/$APP_NAME-$VERSION-rw.dmg"
+PENDING_DMG="$STAGE_ROOT/$APP_NAME-$VERSION-pending.dmg"
 BACKGROUND_NAME="background.png"
 MOUNT_DIR=""
 DEV_NAME=""
@@ -25,13 +28,17 @@ case "${1:-}" in
         exit 2
         ;;
 esac
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [--local]" >&2
+    exit 2
+fi
 
 if [ -z "$VERSION" ]; then
     echo "Could not read app version from Info.plist" >&2
     exit 1
 fi
 
-if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}([.-][0-9A-Za-z.]+)?$ ]]; then
+if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || [[ "$VERSION" =~ (^|\.)0[0-9] ]]; then
     echo "Invalid release version: $VERSION" >&2
     exit 1
 fi
@@ -48,8 +55,17 @@ if ! $LOCAL_PACKAGE; then
     fi
 fi
 
+./tools/check_release_consistency.sh
 ./make_app.sh
 codesign --verify --deep --strict "$APP_BUNDLE"
+
+if ! $LOCAL_PACKAGE; then
+    signing_details="$(LC_ALL=C codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
+    if ! grep -Fq "Authority=Developer ID Application:" <<<"$signing_details"; then
+        echo "Official DMGs require a Developer ID Application signature." >&2
+        exit 1
+    fi
+fi
 
 if ! lipo "$APP_BUNDLE/Contents/MacOS/$APP_NAME" -verify_arch arm64; then
     echo "BusyCat releases must contain an arm64 binary." >&2
@@ -71,30 +87,44 @@ ditto "$APP_BUNDLE" "$STAGE_DIR/$APP_BUNDLE"
 swift tools/render_dmg_background.swift "$STAGE_ROOT/$BACKGROUND_NAME"
 IMAGE_SIZE_MB="$(du -sm "$STAGE_DIR" | awk '{print $1 + 32}')"
 
-rm -f "$DMG_NAME" "$TEMP_DMG"
+rm -f "$TEMP_DMG" "$PENDING_DMG"
+
+detach_writable_dmg() {
+    if [ -n "$DEV_NAME" ]; then
+        local hdi_info
+        hdi_info="$(hdiutil info 2>/dev/null || true)"
+        if [[ "$hdi_info" != *"$DEV_NAME"* ]] || { [ -n "$MOUNT_DIR" ] && [[ "$hdi_info" != *"$MOUNT_DIR"* ]]; }; then
+            return 1
+        fi
+        for _ in 1 2 3 4 5; do
+            if hdiutil detach "$DEV_NAME" -quiet; then
+                DEV_NAME=""
+                MOUNT_DIR=""
+                return 0
+            fi
+            sleep 1
+        done
+        if hdiutil detach "$DEV_NAME" -force -quiet; then
+            DEV_NAME=""
+            MOUNT_DIR=""
+            return 0
+        fi
+        return 1
+    fi
+}
+
+cleanup() {
+    detach_writable_dmg || true
+    rm -f "$TEMP_DMG" "$PENDING_DMG"
+}
+trap cleanup EXIT
+
 hdiutil create \
     -volname "$VOLUME_NAME" \
     -size "${IMAGE_SIZE_MB}m" \
     -fs HFS+ \
     -ov \
     "$TEMP_DMG"
-
-detach_writable_dmg() {
-    if [ -n "$DEV_NAME" ] && hdiutil info | grep -Fq "$DEV_NAME"; then
-        for _ in 1 2 3 4 5; do
-            if hdiutil detach "$DEV_NAME" -quiet; then
-                return 0
-            fi
-            sleep 1
-        done
-        hdiutil detach "$DEV_NAME" -force -quiet
-    fi
-}
-
-cleanup() {
-    detach_writable_dmg || true
-}
-trap cleanup EXIT
 
 MOUNT_INFO="$(hdiutil attach "$TEMP_DMG" \
     -mountrandom /Volumes \
@@ -174,24 +204,28 @@ APPLESCRIPT
 
 sync
 detach_writable_dmg
-trap - EXIT
 
 hdiutil convert "$TEMP_DMG" \
     -format UDZO \
     -imagekey zlib-level=9 \
-    -o "$DMG_NAME" >/dev/null
+    -o "$PENDING_DMG" >/dev/null
 
 rm -f "$TEMP_DMG"
 
 if ! $LOCAL_PACKAGE; then
-    codesign --force --timestamp --sign "$BUSYCAT_SIGN_IDENTITY" "$DMG_NAME"
-    codesign --verify --strict "$DMG_NAME"
-    xcrun notarytool submit "$DMG_NAME" \
+    codesign --force --timestamp --sign "$BUSYCAT_SIGN_IDENTITY" "$PENDING_DMG"
+    codesign --verify --strict "$PENDING_DMG"
+    xcrun notarytool submit "$PENDING_DMG" \
         --keychain-profile "$BUSYCAT_NOTARY_PROFILE" \
         --wait
-    xcrun stapler staple "$DMG_NAME"
-    xcrun stapler validate "$DMG_NAME"
+    xcrun stapler staple "$PENDING_DMG"
+    xcrun stapler validate "$PENDING_DMG"
+    codesign --verify --strict "$PENDING_DMG"
 fi
+
+hdiutil verify "$PENDING_DMG" >/dev/null
+mv -f "$PENDING_DMG" "$DMG_NAME"
+trap - EXIT
 
 echo "Built $DMG_NAME"
 shasum -a 256 "$DMG_NAME"

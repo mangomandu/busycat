@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let sampling = SamplingCoordinator()
     private var samplingInFlight = false
+    private var fullSamplingInFlight = false
     private var fullSamplePending = false
     private var latest = Metrics()
     private var menuOpen = false
@@ -745,14 +746,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? .all
             : .required(driver: driver, statusTextMode: statusTextMode, memoryFish: memoryFish)
         if samplingInFlight {
-            if full { fullSamplePending = true }
+            // A completed full sample already satisfies requests made while it is
+            // running. Queue one only when the current work is a light sample.
+            if full && !fullSamplingInFlight { fullSamplePending = true }
             return
         }
 
         samplingInFlight = true
+        fullSamplingInFlight = full
         sampling.sample(full: full, fields: fields) { [weak self] sample in
             guard let self else { return }
             self.samplingInFlight = false
+            self.fullSamplingInFlight = false
             self.applySample(sample, full: full, fields: fields)
             if self.fullSamplePending {
                 self.fullSamplePending = false
@@ -765,7 +770,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if full {
             latest = sample
             thermalPopoverDirty = true
-            refreshThermalPopoverIfNeeded()
+            if thermalPopover?.isShown == true {
+                refreshThermalPopoverIfNeeded()
+            }
         } else {
             if fields.contains(.cpu) {
                 latest.cpu = sample.cpu
@@ -791,8 +798,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        cpuHistory.append(latest.cpu)
-        if cpuHistory.count > 60 { cpuHistory.removeFirst() }
+        MetricMath.updateHistory(
+            &cpuHistory,
+            sample: fields.contains(.cpu) ? latest.cpu : nil)
         updateStatusAccessibility()
         refreshPresentation()
     }
@@ -955,6 +963,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         driver = d
         updateSpeedStatusItem()
         refreshPresentation()
+        requestSample()
     }
 
     private func applyCatColor(_ c: CatColor) {
@@ -974,11 +983,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusTextMode = mode
         layout()
         refreshPresentation()
-        if mode == .temperature { requestSample() }
+        requestSample()
     }
 
     private func applyLanguage(_ lang: AppLanguage) {
         language = lang
+        thermalPopoverDirty = true
         buildMenu()
         layout()
         refreshPresentation()
@@ -996,6 +1006,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastFishLevel = -1
         layout()
         updateFishPile()
+        if on { requestSample() }
     }
 
     private func applyInvert(_ on: Bool) {
@@ -1174,7 +1185,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isLoginEnabled() -> Bool {
-        if #available(macOS 13.0, *) { return SMAppService.mainApp.status == .enabled }
+        if #available(macOS 13.0, *) {
+            switch SMAppService.mainApp.status {
+            case .enabled, .requiresApproval:
+                return true
+            case .notRegistered, .notFound:
+                return false
+            @unknown default:
+                return false
+            }
+        }
         return false
     }
 

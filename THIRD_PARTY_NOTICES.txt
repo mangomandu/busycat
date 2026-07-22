@@ -1,0 +1,10 @@
+BusyCat third-party notices
+
+RunCat
+Project: https://github.com/Kyome22/menubar_runcat
+Author: Takuto Nakamura
+
+BusyCat includes RunCat's five-frame cat sprite artwork and adapts its speed
+mapping formula. RunCat is licensed under the Apache License, Version 2.0. The
+complete license text is distributed alongside this notice as
+Apache-2.0-RunCat.txt and in the source tree as THIRD_PARTY_LICENSE-RunCat.txt.

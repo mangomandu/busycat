@@ -10,17 +10,36 @@ permissions:
 jobs:
   test:
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Validate scripts and property list
+        run: |
+          for script in make_app.sh make_dmg.sh test.sh tools/*.sh; do
+            bash -n "$script"
+          done
+          plutil -lint Info.plist
+          ruby -c Casks/busycat.rb
       - name: Check release metadata
         run: ./tools/check_release_consistency.sh
       - name: Run tests
-        run: swift test
+        run: ./test.sh
+      - name: Enforce complete concurrency checking
+        run: >-
+          swift build -c debug
+          -Xswiftc -warn-concurrency
+          -Xswiftc -strict-concurrency=complete
+          -Xswiftc -warnings-as-errors
       - name: Build release with warnings as errors
         run: swift build -c release -Xswiftc -warnings-as-errors
       - name: Package and verify app signature
         run: |
           ./make_app.sh
+          test -f BusyCat.app/Contents/Resources/Licenses/MIT.txt
+          test -f BusyCat.app/Contents/Resources/Licenses/Apache-2.0-RunCat.txt
+          test -f BusyCat.app/Contents/Resources/Licenses/THIRD_PARTY_NOTICES.txt
           codesign --verify --deep --strict BusyCat.app
       - name: Verify Apple Silicon binary
         run: file .build/release/BusyCat | grep -q arm64

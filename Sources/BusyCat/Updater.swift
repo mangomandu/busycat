@@ -39,12 +39,17 @@ enum Updater {
 
         init?(_ raw: String) {
             let buildSplit = raw.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
-            guard !buildSplit[0].isEmpty else { return nil }
+            guard !buildSplit[0].isEmpty, buildSplit.count <= 2 else { return nil }
+            if buildSplit.count == 2,
+               !Self.validDotIdentifiers(buildSplit[1], numericLeadingZerosAllowed: true) {
+                return nil
+            }
             let versionSplit = buildSplit[0].split(
                 separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
             let components = versionSplit[0].split(separator: ".", omittingEmptySubsequences: false)
-            guard !components.isEmpty,
-                  components.allSatisfy({ !$0.isEmpty && Int($0) != nil })
+            guard (1...3).contains(components.count),
+                  components.allSatisfy(Self.validCoreComponent),
+                  components.allSatisfy({ Int($0) != nil })
             else { return nil }
             var normalizedCore = components.compactMap { Int($0) }
             while normalizedCore.count > 1, normalizedCore.last == 0 {
@@ -54,13 +59,52 @@ enum Updater {
 
             if versionSplit.count == 2 {
                 let identifiers = versionSplit[1].split(separator: ".", omittingEmptySubsequences: false)
-                guard !identifiers.isEmpty, identifiers.allSatisfy({ !$0.isEmpty }) else { return nil }
-                prerelease = identifiers.map { part in
-                    Int(part).map(Identifier.number) ?? .text(String(part))
+                guard Self.validDotIdentifiers(
+                    versionSplit[1], numericLeadingZerosAllowed: false)
+                else { return nil }
+                var parsed: [Identifier] = []
+                for part in identifiers {
+                    if Self.isASCIINumber(part) {
+                        guard let number = Int(part) else { return nil }
+                        parsed.append(.number(number))
+                    } else {
+                        parsed.append(.text(String(part)))
+                    }
                 }
+                prerelease = parsed
             } else {
                 prerelease = nil
             }
+        }
+
+        private static func validCoreComponent(_ part: Substring) -> Bool {
+            isASCIINumber(part) && (part == "0" || !part.hasPrefix("0"))
+        }
+
+        private static func validDotIdentifiers(
+            _ raw: Substring,
+            numericLeadingZerosAllowed: Bool
+        ) -> Bool {
+            let parts = raw.split(separator: ".", omittingEmptySubsequences: false)
+            guard !parts.isEmpty else { return false }
+            return parts.allSatisfy { part in
+                guard !part.isEmpty, part.utf8.allSatisfy(isIdentifierByte) else { return false }
+                return numericLeadingZerosAllowed
+                    || !isASCIINumber(part)
+                    || part == "0"
+                    || !part.hasPrefix("0")
+            }
+        }
+
+        private static func isASCIINumber(_ part: Substring) -> Bool {
+            !part.isEmpty && part.utf8.allSatisfy { (48...57).contains($0) }
+        }
+
+        private static func isIdentifierByte(_ byte: UInt8) -> Bool {
+            (48...57).contains(byte)
+                || (65...90).contains(byte)
+                || (97...122).contains(byte)
+                || byte == 45
         }
 
         static func < (lhs: Version, rhs: Version) -> Bool {
@@ -98,21 +142,23 @@ enum Updater {
         else { return .failed }
 
         if tag.first?.lowercased() == "v" { tag.removeFirst() }
-        guard Version(tag) != nil, Version(currentVersion) != nil else { return .failed }
-        return isNewer(tag, than: currentVersion) ? .updateAvailable(tag) : .upToDate
+        guard let candidate = Version(tag), let current = Version(currentVersion) else { return .failed }
+        return candidate > current ? .updateAvailable(tag) : .upToDate
     }
 
     /// Fetch the latest release tag and distinguish a successful no-update result
     /// from network, HTTP, and response-decoding failures.
     static func check(completion: @escaping @MainActor @Sendable (CheckResult) -> Void) {
         let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
+        let runningVersion = currentVersion
         var req = URLRequest(url: url, timeoutInterval: 10)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("BusyCat/\(runningVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: req) { data, response, error in
             let statusCode = (response as? HTTPURLResponse)?.statusCode
             let result = error == nil
                 ? interpretLatestRelease(statusCode: statusCode, data: data,
-                                         currentVersion: currentVersion)
+                                         currentVersion: runningVersion)
                 : .failed
             DispatchQueue.main.async { completion(result) }
         }.resume()

@@ -469,7 +469,7 @@ final class SystemSampler: @unchecked Sendable {
         let design = d["DesignCapacity"] as? Int
         let onAC = (d["ExternalConnected"] as? Bool) ?? false
         let charging = (d["IsCharging"] as? Bool) ?? false
-        let cycles = d["CycleCount"] as? Int
+        let cycles = (d["CycleCount"] as? Int).flatMap { $0 >= 0 ? $0 : nil }
         // Temperature is centi-°C on this hardware (3030 → 30.3°C). Some models
         // report differently; show only a plausible value, else "—".
         let temp = (d["Temperature"] as? Int).map { Double($0) / 100 }.flatMap { (0...80).contains($0) ? $0 : nil }
@@ -480,42 +480,61 @@ final class SystemSampler: @unchecked Sendable {
         }
         // Battery health (= System Settings "Maximum Capacity"): raw max vs design.
         var health: Double? = nil
-        if let m = rawMax, let dz = design, dz > 0 { health = min(100, Double(m) / Double(dz) * 100) }
+        if let m = rawMax, let dz = design, dz > 0 {
+            health = max(0, min(100, Double(m) / Double(dz) * 100))
+        }
         return (pct, charging, onAC, health, cycles, temp)
     }
 
-    // MARK: Network type + local IPv4 of the primary interface
+    // MARK: Network type + local address of the primary interface
 
     private func networkInfo() -> (type: String, ip: String, bsd: String?) {
         var bsd: String?
-        if let store = SCDynamicStoreCreate(nil, "BusyCat" as CFString, nil, nil),
-            let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString)
-                as? [String: Any] {
-            bsd = dict["PrimaryInterface"] as? String
+        if let store = SCDynamicStoreCreate(nil, "BusyCat" as CFString, nil, nil) {
+            for family in ["IPv4", "IPv6"] {
+                let key = "State:/Network/Global/\(family)" as CFString
+                if let dict = SCDynamicStoreCopyValue(store, key) as? [String: Any],
+                   let primary = dict["PrimaryInterface"] as? String {
+                    bsd = primary
+                    break
+                }
+            }
         }
-        let ip = ipv4(for: bsd)
-        let type = bsd.flatMap(interfaceDisplayName) ?? "—"
+        let ip = localAddress(for: bsd)
+        let type = bsd.map { interfaceDisplayName($0) ?? fallbackInterfaceDisplayName($0) } ?? "—"
         return (type, ip, bsd)
     }
 
-    private func ipv4(for iface: String?) -> String {
+    private func localAddress(for iface: String?) -> String {
         guard let iface else { return "—" }
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0 else { return "—" }
         defer { freeifaddrs(ifaddr) }
+        var globalIPv6: String?
+        var linkLocalIPv6: String?
         var ptr = ifaddr
         while let p = ptr {
             defer { ptr = p.pointee.ifa_next }
-            guard let addr = p.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            guard let addr = p.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_INET)
+                    || addr.pointee.sa_family == UInt8(AF_INET6),
+                  (p.pointee.ifa_flags & UInt32(IFF_UP)) != 0
+            else { continue }
             let name = String(cString: p.pointee.ifa_name)
             guard name == iface else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
                               nil, 0, NI_NUMERICHOST) == 0 else { continue }
             let ip = String(cString: host)
-            if !ip.isEmpty { return ip }
+            guard !ip.isEmpty else { continue }
+            if addr.pointee.sa_family == UInt8(AF_INET) { return ip }
+            if ip.lowercased().hasPrefix("fe80:") {
+                if linkLocalIPv6 == nil { linkLocalIPv6 = ip }
+            } else if ip != "::1" {
+                if globalIPv6 == nil { globalIPv6 = ip }
+            }
         }
-        return "—"
+        return globalIPv6 ?? linkLocalIPv6 ?? "—"
     }
 
     private func interfaceDisplayName(_ bsd: String) -> String? {
@@ -527,6 +546,10 @@ final class SystemSampler: @unchecked Sendable {
             return SCNetworkInterfaceGetLocalizedDisplayName(i) as String?
         }
         return nil
+    }
+
+    private func fallbackInterfaceDisplayName(_ bsd: String) -> String {
+        bsd.hasPrefix("utun") ? "VPN" : bsd
     }
 }
 
@@ -597,9 +620,9 @@ enum ThermalReader {
             let parts = line.split(separator: "=", maxSplits: 1)
             guard parts.count == 2, let value = Int(parts[1]) else { continue }
             switch parts[0] {
-            case "CPU_Speed_Limit": speed = value
-            case "CPU_Scheduler_Limit": scheduler = value
-            case "CPU_Available_CPUs": available = value
+            case "CPU_Speed_Limit" where (0...100).contains(value): speed = value
+            case "CPU_Scheduler_Limit" where (0...100).contains(value): scheduler = value
+            case "CPU_Available_CPUs" where (1...1024).contains(value): available = value
             default: continue
             }
         }
@@ -618,7 +641,9 @@ enum ThermalReader {
         task.executableURL = executableURL
         task.arguments = arguments
         task.standardOutput = pipe
-        task.standardError = Pipe()
+        // Diagnostics are intentionally ignored. Sending them to an unread pipe
+        // could deadlock a noisy child before it has a chance to terminate.
+        task.standardError = FileHandle.nullDevice
         let exited = DispatchSemaphore(value: 0)
         task.terminationHandler = { _ in exited.signal() }
         do {
@@ -627,9 +652,9 @@ enum ThermalReader {
             return nil
         }
         if exited.wait(timeout: .now() + max(0, timeout)) == .timedOut {
-            task.terminate()
+            if task.isRunning { task.terminate() }
             if exited.wait(timeout: .now() + .milliseconds(500)) == .timedOut {
-                kill(task.processIdentifier, SIGKILL)
+                if task.isRunning { kill(task.processIdentifier, SIGKILL) }
                 _ = exited.wait(timeout: .now() + .milliseconds(500))
             }
             return nil
@@ -975,10 +1000,13 @@ enum GPUReader {
         -> (raw: Double, render: Double, subtractRenderer: Bool, available: Bool) {
         func percent(_ key: String) -> Double? {
             guard let value = perf[key] as? NSNumber else { return nil }
-            return max(0, min(100, value.doubleValue))
+            let number = value.doubleValue
+            guard number.isFinite else { return nil }
+            return max(0, min(100, number))
         }
 
-        let render = percent("Renderer Utilization %") ?? 0
+        let renderValue = percent("Renderer Utilization %")
+        let render = renderValue ?? 0
         // "Device Utilization %" is the right signal: 0 at idle, ~100 under Metal
         // compute (embeddings). Do NOT fold in "Renderer"/"Tiler" — those read
         // ~10-15% just from normal menu-bar compositing (including our own cat),
@@ -996,8 +1024,8 @@ enum GPUReader {
         if let tiler = percent("Tiler Utilization %") {
             return (max(render, tiler), render, false, true)
         }
-        if perf["Renderer Utilization %"] != nil {
-            return (render, render, false, true)
+        if let renderValue {
+            return (renderValue, renderValue, false, true)
         }
         return (0, 0, false, false)
     }

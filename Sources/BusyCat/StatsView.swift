@@ -38,7 +38,8 @@ final class StatsView: NSView {
         setAccessibilityRole(.group)
         resize()
     }
-    required init?(coder: NSCoder) { fatalError() }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
 
     private var cachedSections: [Section] = []
 
@@ -130,8 +131,10 @@ final class StatsView: NSView {
             value.map { String(format: "%.1f°C", $0) } ?? "—"
         }
         func thermalAccent(state: Int, speedLimit: Int?) -> NSColor? {
-            if let speedLimit, speedLimit > 0, speedLimit < 60 { return .systemOrange }
-            if ProcessInfo.ThermalState(rawValue: state) != .nominal { return .systemOrange }
+            if let speedLimit, speedLimit < 60 { return .systemOrange }
+            if let thermalState = ProcessInfo.ThermalState(rawValue: state), thermalState != .nominal {
+                return .systemOrange
+            }
             return nil
         }
 
@@ -139,10 +142,10 @@ final class StatsView: NSView {
         var thermalSubs = [
             "\(appText("최고 센서", "Hottest sensor")): \(temp(m.thermalTemp))",
         ]
-        if let speedLimit = m.cpuSpeedLimit, speedLimit > 0, speedLimit < 100 {
+        if let speedLimit = m.cpuSpeedLimit, speedLimit < 100 {
             thermalSubs.append("\(appText("CPU 속도 제한", "CPU speed limit")): \(speedLimit)%")
         }
-        if let schedulerLimit = m.cpuSchedulerLimit, schedulerLimit > 0, schedulerLimit < 100 {
+        if let schedulerLimit = m.cpuSchedulerLimit, schedulerLimit < 100 {
             thermalSubs.append("\(appText("스케줄러 제한", "Scheduler limit")): \(schedulerLimit)%")
         }
 
