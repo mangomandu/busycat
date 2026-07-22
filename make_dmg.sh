@@ -9,7 +9,7 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.p
 DMG_NAME="$APP_NAME-$VERSION-macOS.dmg"
 STAGE_ROOT=".build/dmg"
 STAGE_DIR="$STAGE_ROOT/$APP_NAME-$VERSION"
-VOLUME_NAME="$APP_NAME $VERSION Installer"
+VOLUME_NAME="$APP_NAME $VERSION"
 APPLICATIONS_LINK="Applications"
 TEMP_DMG="$STAGE_ROOT/$APP_NAME-$VERSION-rw.dmg"
 BACKGROUND_NAME="background.png"
@@ -96,43 +96,50 @@ tell application "Finder"
     activate
     open dmgFolder
     delay 1
-    set targetWindow to Finder window 1
+    set targetWindow to container window of dmgFolder
     tell targetWindow
         set current view to icon view
         set toolbar visible to false
         set statusbar visible to false
-        set bounds to {180, 90, 700, 830}
+        set pathbar visible to false
+        set bounds to {180, 120, 840, 560}
     end tell
 
     set viewOptions to the icon view options of targetWindow
     tell viewOptions
         set arrangement to not arranged
-        set icon size to 96
-        set text size to 14
+        set icon size to 112
+        set text size to 13
         set background picture to backgroundImage
     end tell
 
-    set position of item "$APP_BUNDLE" of targetWindow to {260, 112}
-    set position of item "$APPLICATIONS_LINK" of targetWindow to {260, 502}
+    set position of item "$APP_BUNDLE" of targetWindow to {170, 235}
+    set position of item "$APPLICATIONS_LINK" of targetWindow to {490, 235}
 
     set extension hidden of item "$APP_BUNDLE" of targetWindow to true
 
     close targetWindow
+    delay 1
     open dmgFolder
     delay 1
-    set targetWindow to Finder window 1
+    set targetWindow to container window of dmgFolder
     tell targetWindow
         set current view to icon view
+        set toolbar visible to false
         set statusbar visible to false
-        set bounds to {180, 90, 700, 830}
+        set pathbar visible to false
+        set bounds to {180, 120, 840, 560}
     end tell
     set viewOptions to the icon view options of targetWindow
     tell viewOptions
         set arrangement to not arranged
-        set icon size to 96
-        set text size to 14
+        set icon size to 112
+        set text size to 13
         set background picture to backgroundImage
     end tell
+    set position of item "$APP_BUNDLE" of targetWindow to {170, 235}
+    set position of item "$APPLICATIONS_LINK" of targetWindow to {490, 235}
+    update dmgFolder without registering applications
     delay 3
 end tell
 APPLESCRIPT
