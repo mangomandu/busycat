@@ -6,8 +6,8 @@ enum MetricMath {
         total: Int64,
         importantAvailable: Int64?,
         regularAvailable: Int64?
-    ) -> (percent: Double, used: Double, total: Double) {
-        guard total > 0 else { return (0, 0, 0) }
+    ) -> (percent: Double, used: Double, total: Double)? {
+        guard total > 0 else { return nil }
 
         // `volumeAvailableCapacityForImportantUsage` can incorrectly report zero
         // on some macOS/APFS combinations. Regular available capacity is a valid
@@ -19,7 +19,10 @@ enum MetricMath {
         if let regularAvailable, regularAvailable >= 0 {
             candidates.append(regularAvailable)
         }
-        let available = candidates.max() ?? 0
+        // Missing capacity is an unavailable reading, not a full disk. Keeping
+        // those states distinct prevents transient filesystem/API failures from
+        // presenting a false 100%-used warning.
+        guard let available = candidates.max() else { return nil }
         let clampedAvailable = min(total, available)
         let used = Double(total - clampedAvailable)
         let totalDouble = Double(total)

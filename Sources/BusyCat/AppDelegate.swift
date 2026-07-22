@@ -17,6 +17,7 @@ import Cocoa
 import QuartzCore
 import ServiceManagement
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let barHeight: CGFloat = 18
     private let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -145,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         layout()
         startAnimation(interval: currentInterval)
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.requestSample()
+            MainActor.assumeIsolated { self?.requestSample() }
         }
         timer.tolerance = 0.2
         // .common so it keeps firing while the menu is open (event-tracking mode),
@@ -500,7 +501,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showThermalPopover(relativeTo rect: NSRect) {
         guard menuOpen else { return }
-        if thermalPopover?.isShown == true { return }
         let popover: NSPopover
         if let existing = thermalPopover {
             popover = existing
@@ -510,11 +510,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.contentViewController = NSViewController()
             thermalPopover = popover
         }
-        if thermalPopoverDirty {
-            popover.contentViewController?.view = thermalPopoverView(for: latest)
-            thermalPopoverDirty = false
-        }
+        refreshThermalPopoverIfNeeded()
+        if popover.isShown { return }
         popover.show(relativeTo: rect, of: statsView, preferredEdge: .maxX)
+    }
+
+    private func refreshThermalPopoverIfNeeded() {
+        guard thermalPopoverDirty, let popover = thermalPopover else { return }
+        popover.contentViewController?.view = thermalPopoverView(for: latest)
+        thermalPopoverDirty = false
     }
 
     private func hideThermalPopover() {
@@ -737,16 +741,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func requestSample(full requestedFull: Bool? = nil) {
         guard !asleep else { return }
         let full = requestedFull ?? menuOpen
+        let fields: SampleFields = full
+            ? .all
+            : .required(driver: driver, statusTextMode: statusTextMode, memoryFish: memoryFish)
         if samplingInFlight {
             if full { fullSamplePending = true }
             return
         }
 
         samplingInFlight = true
-        sampling.sample(full: full, includeTemperature: statusTextMode == .temperature) { [weak self] sample in
+        sampling.sample(full: full, fields: fields) { [weak self] sample in
             guard let self else { return }
             self.samplingInFlight = false
-            self.applySample(sample, full: full)
+            self.applySample(sample, full: full, fields: fields)
             if self.fullSamplePending {
                 self.fullSamplePending = false
                 if self.menuOpen { self.requestSample(full: true) }
@@ -754,25 +761,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func applySample(_ sample: Metrics, full: Bool) {
+    private func applySample(_ sample: Metrics, full: Bool, fields: SampleFields) {
         if full {
             latest = sample
             thermalPopoverDirty = true
+            refreshThermalPopoverIfNeeded()
         } else {
-            latest.cpu = sample.cpu
-            latest.cpuSystem = sample.cpuSystem
-            latest.cpuUser = sample.cpuUser
-            latest.gpuCompute = sample.gpuCompute
-            latest.gpuRaw = sample.gpuRaw
-            latest.gpuRender = sample.gpuRender
-            latest.gpuAvailable = sample.gpuAvailable
-            latest.memory = sample.memory
-            latest.memoryPressure = sample.memoryPressure
-            latest.memApp = sample.memApp
-            latest.memWired = sample.memWired
-            latest.memCompressed = sample.memCompressed
+            if fields.contains(.cpu) {
+                latest.cpu = sample.cpu
+                latest.cpuSystem = sample.cpuSystem
+                latest.cpuUser = sample.cpuUser
+            }
+            if fields.contains(.gpu) {
+                latest.gpuCompute = sample.gpuCompute
+                latest.gpuRaw = sample.gpuRaw
+                latest.gpuRender = sample.gpuRender
+                latest.gpuAvailable = sample.gpuAvailable
+            }
+            if fields.contains(.memory) {
+                latest.memory = sample.memory
+                latest.memoryPressure = sample.memoryPressure
+                latest.memApp = sample.memApp
+                latest.memWired = sample.memWired
+                latest.memCompressed = sample.memCompressed
+            }
             latest.thermalState = sample.thermalState
-            if statusTextMode == .temperature {
+            if fields.contains(.temperature) {
                 latest.thermalTemp = sample.thermalTemp
             }
         }
@@ -819,7 +833,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startAnimation(interval: TimeInterval) {
         runnerTimer?.invalidate()
         guard !tintedFrames.isEmpty else { return }
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.next() }
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.next() }
+        }
         timer.tolerance = interval * 0.1
         RunLoop.main.add(timer, forMode: .common)
         runnerTimer = timer
@@ -901,19 +917,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusAccessibility() {
         guard let button = statusItem.button else { return }
-        let gpuValue = latest.gpuAvailable
-            ? String(format: appText("GPU 연산 %.0f%%", "GPU compute %.0f%%"), latest.gpuCompute)
-            : appText("GPU 사용 불가", "GPU unavailable")
+        let fields = SampleFields.required(
+            driver: driver, statusTextMode: statusTextMode, memoryFish: memoryFish)
+        var values: [String] = []
+        if fields.contains(.cpu) {
+            values.append(String(format: "CPU %.0f%%", latest.cpu))
+        }
+        if fields.contains(.gpu) {
+            values.append(latest.gpuAvailable
+                ? String(format: appText("GPU 연산 %.0f%%", "GPU compute %.0f%%"), latest.gpuCompute)
+                : appText("GPU 사용 불가", "GPU unavailable"))
+        }
+        if fields.contains(.memory) {
+            values.append(String(format: appText(
+                "메모리 %.0f%%, 메모리 압력 %@",
+                "memory %.0f%%, memory pressure %@"),
+                latest.memory, memoryPressureText(latest.memoryPressure)))
+        }
+        if fields.contains(.temperature) {
+            values.append(latest.thermalTemp.map { String(format: "%.0f°C", $0) }
+                ?? appText("온도 사용 불가", "temperature unavailable"))
+        }
+        if statusTextMode == .thermal {
+            values.append("\(appText("열 압박", "thermal pressure")) \(thermalState(latest.thermalState))")
+        }
         button.toolTip = appText("바쁘냥 시스템 상태", "BusyCat system status")
         button.setAccessibilityLabel(appText("바쁘냥 시스템 모니터", "BusyCat system monitor"))
         button.setAccessibilityHelp(appText(
             "누르면 CPU, GPU 연산, 메모리와 온도 상세 정보를 엽니다.",
             "Press to open CPU, GPU compute, memory, and temperature details."))
-        button.setAccessibilityValue(String(format: appText(
-            "CPU %.0f%%, %@, 메모리 %.0f%%, 메모리 압력 %@",
-            "CPU %.0f%%, %@, memory %.0f%%, memory pressure %@"),
-            latest.cpu, gpuValue, latest.memory,
-            memoryPressureText(latest.memoryPressure)))
+        button.setAccessibilityValue(values.joined(separator: ", "))
     }
 
     // MARK: Actions
@@ -1133,7 +1166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startUpdateSchedule() {
         let timer = Timer(timeInterval: 6 * 3600, repeats: true) { [weak self] _ in
-            self?.maybeAutoCheckUpdate()
+            MainActor.assumeIsolated { self?.maybeAutoCheckUpdate() }
         }
         timer.tolerance = 30 * 60
         RunLoop.main.add(timer, forMode: .common)

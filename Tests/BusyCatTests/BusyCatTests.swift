@@ -6,23 +6,23 @@ import Testing
 struct BusyCatTests {
     @Test func diskUsageFallsBackWhenImportantCapacityIsZero() {
         let result = MetricMath.diskUsage(
-            total: 1_000, importantAvailable: 0, regularAvailable: 800)
+            total: 1_000, importantAvailable: 0, regularAvailable: 800)!
         #expect(abs(result.percent - 20) < 0.0001)
         #expect(result.used == 200)
     }
 
     @Test func diskUsageAllowsPurgeableCapacityAndClampsToTotal() {
         let result = MetricMath.diskUsage(
-            total: 1_000, importantAvailable: 1_200, regularAvailable: 800)
+            total: 1_000, importantAvailable: 1_200, regularAvailable: 800)!
         #expect(result.percent == 0)
         #expect(result.used == 0)
     }
 
-    @Test func diskUsageTreatsMissingAvailabilityAsFullyUsed() {
-        let result = MetricMath.diskUsage(
-            total: 1_000, importantAvailable: nil, regularAvailable: nil)
-        #expect(result.percent == 100)
-        #expect(result.used == 1_000)
+    @Test func diskUsageTreatsMissingAvailabilityAsUnavailable() {
+        #expect(MetricMath.diskUsage(
+            total: 1_000, importantAvailable: nil, regularAvailable: nil) == nil)
+        #expect(MetricMath.diskUsage(
+            total: 1_000, importantAvailable: -1, regularAvailable: -1) == nil)
     }
 
     @Test func cpuCounterDeltaHandlesUInt32Wrap() {
@@ -105,6 +105,11 @@ struct BusyCatTests {
         #expect(Updater.isNewer("1.10", than: "1.9"))
         #expect(!Updater.isNewer("1.9", than: "1.10"))
         #expect(!Updater.isNewer("1.0", than: "1.0"))
+        #expect(!Updater.isNewer("1.0.0", than: "1.0"))
+        #expect(!Updater.isNewer("1.0-beta", than: "1.0"))
+        #expect(!Updater.isNewer("1.0+build.2", than: "1.0+build.1"))
+        #expect(Updater.isNewer("1.0", than: "1.0-rc.1"))
+        #expect(Updater.isNewer("1.0-rc.10", than: "1.0-rc.2"))
     }
 
     @Test func updateResponseDistinguishesUpToDateAndFailure() throws {
@@ -123,16 +128,30 @@ struct BusyCatTests {
             statusCode: 200, data: data, currentVersion: "1.1") == .updateAvailable("1.2"))
     }
 
-    /// A repo with no releases yet returns 404 from /releases/latest. That is a
-    /// benign "nothing newer" state, not a network failure — it must not surface
-    /// a false error to the user (regression guard).
-    @Test func updateResponseTreatsNoReleases404AsUpToDate() {
+    /// GitHub uses the same 404 for "no releases", a missing repository, and a
+    /// renamed repository, so the updater cannot safely call it up to date.
+    @Test func updateResponseTreats404AsFailure() {
         let body = Data(#"{"message":"Not Found","status":"404"}"#.utf8)
         #expect(Updater.interpretLatestRelease(
-            statusCode: 404, data: body, currentVersion: "1.0") == .upToDate)
-        // 404 wins even with no body at all.
+            statusCode: 404, data: body, currentVersion: "1.0") == .failed)
         #expect(Updater.interpretLatestRelease(
-            statusCode: 404, data: nil, currentVersion: "1.0") == .upToDate)
+            statusCode: 404, data: nil, currentVersion: "1.0") == .failed)
+    }
+
+    @Test func invalidReleaseVersionFailsClosed() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["tag_name": "next"])
+        #expect(Updater.interpretLatestRelease(
+            statusCode: 200, data: data, currentVersion: "1.0") == .failed)
+    }
+
+    @Test func lightSamplingFollowsActiveFeatures() {
+        #expect(SampleFields.required(
+            driver: .busiest, statusTextMode: .off, memoryFish: false) == [.cpu, .gpu])
+        #expect(SampleFields.required(
+            driver: .cpu, statusTextMode: .memory, memoryFish: false) == [.cpu, .memory])
+        #expect(SampleFields.required(
+            driver: .gpu, statusTextMode: .temperature, memoryFish: true)
+            == [.gpu, .memory, .temperature])
     }
 
     @Test func pmsetThermalLimitsParseWithWhitespace() {
@@ -144,5 +163,15 @@ struct BusyCatTests {
         #expect(result.scheduler == 100)
         #expect(result.available == 10)
         #expect(result.speed == 87)
+    }
+
+    @Test func externalThermalCommandHasTimeout() {
+        let started = Date()
+        let result = ThermalReader.runCommand(
+            executableURL: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["2"],
+            timeout: 0.05)
+        #expect(result == nil)
+        #expect(Date().timeIntervalSince(started) < 1.5)
     }
 }

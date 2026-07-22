@@ -32,17 +32,21 @@ if CommandLine.arguments.contains("--metrics") {
     exit(0)
 }
 
-#if BUSYCAT_DEVELOPMENT_TOOLS
-if let index = CommandLine.arguments.firstIndex(of: "--statsdump") {
-    let next = CommandLine.arguments.index(after: index)
-    let outputPath = next < CommandLine.arguments.endIndex
-        && !CommandLine.arguments[next].hasPrefix("-")
-        ? CommandLine.arguments[next]
-        : "/tmp/stats.png"
-    exit(renderDevelopmentStatsPanel(to: URL(fileURLWithPath: outputPath)) ? 0 : 1)
-}
-#endif
+// This executable's UI path starts on the process main thread. Make that
+// invariant explicit so AppKit state remains main-actor isolated under Swift 6.
+MainActor.assumeIsolated {
+    #if BUSYCAT_DEVELOPMENT_TOOLS
+    if let index = CommandLine.arguments.firstIndex(of: "--statsdump") {
+        let next = CommandLine.arguments.index(after: index)
+        let outputPath = next < CommandLine.arguments.endIndex
+            && !CommandLine.arguments[next].hasPrefix("-")
+            ? CommandLine.arguments[next]
+            : "/tmp/stats.png"
+        exit(renderDevelopmentStatsPanel(to: URL(fileURLWithPath: outputPath)) ? 0 : 1)
+    }
+    #endif
 
-let delegate = AppDelegate()
-NSApplication.shared.delegate = delegate
-_ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)
+    let delegate = AppDelegate()
+    NSApplication.shared.delegate = delegate
+    _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)
+}

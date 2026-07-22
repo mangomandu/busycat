@@ -14,8 +14,11 @@ private enum HIDPrivateAPI {
     typealias CopyEvent = @convention(c) (CFTypeRef, Int64, Int64, Int64) -> Unmanaged<CFTypeRef>?
     typealias GetFloatValue = @convention(c) (CFTypeRef, Int64) -> Double
 
-    private static let handle = dlopen(
-        "/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY)
+    private final class Loader: @unchecked Sendable {
+        let handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY)
+    }
+
+    private static let loader = Loader()
 
     static let create: Create? = load("IOHIDEventSystemClientCreate", as: Create.self)
     static let setMatching: SetMatching? = load("IOHIDEventSystemClientSetMatching", as: SetMatching.self)
@@ -25,12 +28,12 @@ private enum HIDPrivateAPI {
     static let getFloatValue: GetFloatValue? = load("IOHIDEventGetFloatValue", as: GetFloatValue.self)
 
     private static func load<T>(_ name: String, as type: T.Type) -> T? {
-        guard let handle, let symbol = dlsym(handle, name) else { return nil }
+        guard let handle = loader.handle, let symbol = dlsym(handle, name) else { return nil }
         return unsafeBitCast(symbol, to: type)
     }
 }
 
-struct TemperatureSensor {
+struct TemperatureSensor: Sendable {
     var name: String
     var value: Double
     var source: String
@@ -38,7 +41,7 @@ struct TemperatureSensor {
 
 /// One snapshot of everything RunCat-GPU monitors. Formulas mirror Activity
 /// Monitor / RunCat (verified by reverse-engineering RunCat's detail menu).
-struct Metrics {
+struct Metrics: Sendable {
     // CPU (normalized: fraction of total capacity, like AM's bottom load bar)
     var cpu: Double = 0          // % = system + user
     var cpuSystem: Double = 0    // %
@@ -87,7 +90,7 @@ struct Metrics {
 /// Samples all system metrics. Holds the small bit of state needed to turn the
 /// kernel's monotonically-increasing counters (CPU ticks, interface bytes) into
 /// per-interval rates.
-final class SystemSampler {
+final class SystemSampler: @unchecked Sendable {
     // CPU tick deltas
     // ~5-second exponential moving average for the fast/jittery rate metrics
     // (CPU, network), so the numbers read stable like Activity Monitor (which
@@ -98,7 +101,7 @@ final class SystemSampler {
     // must balance, so calling it every sample would slowly leak port references.
     private let host = mach_host_self()
     private let totalMemory = Double(ProcessInfo.processInfo.physicalMemory)
-    private let pageSize = Double(vm_kernel_page_size)
+    private let pageSize = Double(getpagesize())
     private let memoryPressureMonitor = MemoryPressureMonitor()
     private var prevUser: UInt32 = 0
     private var prevSystem: UInt32 = 0
@@ -148,42 +151,48 @@ final class SystemSampler {
 
     /// Cheap metrics needed every second to drive the cat (CPU/GPU/memory are all
     /// single fast kernel calls). Used while the menu is closed — i.e. ~always.
-    func sampleLight() -> Metrics {
+    func sampleLight(fields: SampleFields = .all) -> Metrics {
         var m = Metrics()
-        let c = cpu()
-        m.cpu = c.total
-        m.cpuSystem = c.system
-        m.cpuUser = c.user
-        let g = GPUReader.stats()
-        if g.available {
-            if gpuEMAPrimed {
-                gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
-                gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
-            } else {
-                gpuRawEMA = g.raw
-                gpuRenderEMA = g.render
-                gpuEMAPrimed = true
-            }
-        } else {
-            gpuRawEMA = 0
-            gpuRenderEMA = 0
-            gpuEMAPrimed = false
+        if fields.contains(.cpu) {
+            let c = cpu()
+            m.cpu = c.total
+            m.cpuSystem = c.system
+            m.cpuUser = c.user
         }
-        gpuSubtractRenderer = g.subtractRenderer
-        m.gpuAvailable = g.available
-        m.gpuRaw = gpuRawEMA
-        m.gpuRender = gpuRenderEMA
-        // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
-        // so ticks where integer render momentarily ≥ raw don't bias the cat low.
-        m.gpuCompute = gpuSubtractRenderer
-            ? MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
-            : gpuRawEMA
-        let mem = memory()
-        m.memory = mem.percent
-        m.memoryPressure = memoryPressureMonitor.level
-        m.memApp = mem.app
-        m.memWired = mem.wired
-        m.memCompressed = mem.compressed
+        if fields.contains(.gpu) {
+            let g = GPUReader.stats()
+            if g.available {
+                if gpuEMAPrimed {
+                    gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
+                    gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
+                } else {
+                    gpuRawEMA = g.raw
+                    gpuRenderEMA = g.render
+                    gpuEMAPrimed = true
+                }
+            } else {
+                gpuRawEMA = 0
+                gpuRenderEMA = 0
+                gpuEMAPrimed = false
+            }
+            gpuSubtractRenderer = g.subtractRenderer
+            m.gpuAvailable = g.available
+            m.gpuRaw = gpuRawEMA
+            m.gpuRender = gpuRenderEMA
+            // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
+            // so ticks where integer render momentarily ≥ raw don't bias the cat low.
+            m.gpuCompute = gpuSubtractRenderer
+                ? MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
+                : gpuRawEMA
+        }
+        if fields.contains(.memory) {
+            let mem = memory()
+            m.memory = mem.percent
+            m.memoryPressure = memoryPressureMonitor.level
+            m.memApp = mem.app
+            m.memWired = mem.wired
+            m.memCompressed = mem.compressed
+        }
         m.thermalState = ProcessInfo.processInfo.thermalState.rawValue
         return m
     }
@@ -204,7 +213,7 @@ final class SystemSampler {
     /// IOKit). Called once for background prewarm, then while the detailed menu is
     /// open so its extra rows stay current.
     func sampleAll() -> Metrics {
-        var m = sampleLight()
+        var m = sampleLight(fields: .all)
         // Heavy, slow-changing reads (disk volume query, SCNetworkInterface
         // lookup, full battery property dict) only every ~5s.
         let now = ProcessInfo.processInfo.systemUptime
@@ -332,10 +341,11 @@ final class SystemSampler {
                       .volumeAvailableCapacityForImportantUsageKey]),
             let total = v.volumeTotalCapacity, total > 0
         else { return (0, 0, 0, false) }
-        let usage = MetricMath.diskUsage(
+        guard let usage = MetricMath.diskUsage(
             total: Int64(total),
             importantAvailable: v.volumeAvailableCapacityForImportantUsage,
             regularAvailable: v.volumeAvailableCapacity.map(Int64.init))
+        else { return (0, 0, Double(total), false) }
         return (usage.percent, usage.used, usage.total, true)
     }
 
@@ -489,24 +499,23 @@ final class SystemSampler {
     }
 
     private func ipv4(for iface: String?) -> String {
+        guard let iface else { return "—" }
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0 else { return "—" }
         defer { freeifaddrs(ifaddr) }
-        var fallback = "—"
         var ptr = ifaddr
         while let p = ptr {
             defer { ptr = p.pointee.ifa_next }
             guard let addr = p.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
             let name = String(cString: p.pointee.ifa_name)
-            if name.hasPrefix("lo") { continue }
+            guard name == iface else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
-                        nil, 0, NI_NUMERICHOST)
+            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
+                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
             let ip = String(cString: host)
-            if let want = iface, name == want { return ip }
-            if fallback == "—" { fallback = ip }
+            if !ip.isEmpty { return ip }
         }
-        return fallback
+        return "—"
     }
 
     private func interfaceDisplayName(_ bsd: String) -> String? {
@@ -534,12 +543,18 @@ enum ThermalReader {
         var cpuAvailableCPUs: Int? = nil
     }
 
-    private static let client: CFTypeRef? = HIDPrivateAPI.create?(kCFAllocatorDefault)?
-        .takeRetainedValue()
-    private static var cachedPMSetTherm = ""
-    private static var nextPMSetRefresh = 0.0
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        let client: CFTypeRef? = HIDPrivateAPI.create?(kCFAllocatorDefault)?.takeRetainedValue()
+        var cachedPMSetTherm = ""
+        var nextPMSetRefresh = 0.0
+    }
+
+    private static let sharedState = State()
 
     static func snapshot() -> Snapshot {
+        sharedState.lock.lock()
+        defer { sharedState.lock.unlock() }
         var s = Snapshot(state: ProcessInfo.processInfo.thermalState.rawValue)
         let hid = temperatureSensors()
         let smc = SMCReader.shared.temperatureSensors()
@@ -561,6 +576,8 @@ enum ThermalReader {
     }
 
     static func hottestTemperature() -> Double? {
+        sharedState.lock.lock()
+        defer { sharedState.lock.unlock() }
         let hid = temperatureSensors()
         let smc = SMCReader.shared.temperatureSensors()
         return (hid + smc)
@@ -589,36 +606,59 @@ enum ThermalReader {
         return (speed, scheduler, available)
     }
 
-    private static func runPMSetTherm() -> String {
+    private static let pmsetTimeout: TimeInterval = 2
+
+    static func runCommand(
+        executableURL: URL,
+        arguments: [String],
+        timeout: TimeInterval
+    ) -> Data? {
         let pipe = Pipe()
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        task.arguments = ["-g", "therm"]
+        task.executableURL = executableURL
+        task.arguments = arguments
         task.standardOutput = pipe
         task.standardError = Pipe()
+        let exited = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in exited.signal() }
         do {
             try task.run()
-            task.waitUntilExit()
         } catch {
-            return ""
+            return nil
         }
-        guard task.terminationStatus == 0 else { return "" }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        if exited.wait(timeout: .now() + max(0, timeout)) == .timedOut {
+            task.terminate()
+            if exited.wait(timeout: .now() + .milliseconds(500)) == .timedOut {
+                kill(task.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + .milliseconds(500))
+            }
+            return nil
+        }
+        guard task.terminationStatus == 0 else { return nil }
+        return pipe.fileHandleForReading.readDataToEndOfFile()
+    }
+
+    private static func runPMSetTherm() -> String {
+        guard let data = runCommand(
+            executableURL: URL(fileURLWithPath: "/usr/bin/pmset"),
+            arguments: ["-g", "therm"],
+            timeout: pmsetTimeout)
+        else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
     }
 
     private static func cachedPMSetOutput() -> String {
         let now = ProcessInfo.processInfo.systemUptime
-        guard now >= nextPMSetRefresh else {
-            return cachedPMSetTherm
+        guard now >= sharedState.nextPMSetRefresh else {
+            return sharedState.cachedPMSetTherm
         }
-        cachedPMSetTherm = runPMSetTherm()
-        nextPMSetRefresh = now + 30
-        return cachedPMSetTherm
+        sharedState.cachedPMSetTherm = runPMSetTherm()
+        sharedState.nextPMSetRefresh = now + 30
+        return sharedState.cachedPMSetTherm
     }
 
     private static func temperatureSensors() -> [TemperatureSensor] {
-        guard let client,
+        guard let client = sharedState.client,
               let setMatching = HIDPrivateAPI.setMatching,
               let copyServices = HIDPrivateAPI.copyServices,
               let copyEvent = HIDPrivateAPI.copyEvent,
@@ -658,8 +698,10 @@ enum ThermalReader {
     }
 }
 
-private final class SMCReader {
+private final class SMCReader: @unchecked Sendable {
     static let shared = SMCReader()
+
+    private let lock = NSLock()
 
     private struct SMCVersion {
         var major: UInt8 = 0
@@ -726,6 +768,8 @@ private final class SMCReader {
     }
 
     func temperatureSensors() -> [TemperatureSensor] {
+        lock.lock()
+        defer { lock.unlock() }
         guard connection != 0 else { return [] }
         if temperatureKeys.isEmpty {
             if keys.isEmpty { keys = readKeys() }
@@ -865,7 +909,16 @@ enum GPUReader {
     // The accelerator service is matched once and cached: re-matching every second
     // is wasteful. We also read only the "PerformanceStatistics" property instead
     // of copying the accelerator's entire (large) property set each tick.
-    private static var cachedService: io_object_t = 0
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var cachedService: io_object_t = 0
+
+        deinit {
+            if cachedService != 0 { IOObjectRelease(cachedService) }
+        }
+    }
+
+    private static let sharedState = State()
 
     /// Returns the GPU breakdown in one registry read:
     ///   - raw:     "Device Utilization %" (total busy, incl. graphics/display rendering) — matches AM
@@ -877,11 +930,13 @@ enum GPUReader {
     /// menu/Mission-Control composite ≈ 0, an embedding stays high — far better
     /// than a fixed baseline that big menu renders could exceed.
     static func stats() -> (raw: Double, render: Double, subtractRenderer: Bool, available: Bool) {
-        if cachedService == 0 { cachedService = findAccelerator() }
-        guard cachedService != 0 else { return (0, 0, true, false) }
-        guard let perf = perfStats(cachedService) else {
-            IOObjectRelease(cachedService)  // service vanished — re-match next time
-            cachedService = 0
+        sharedState.lock.lock()
+        defer { sharedState.lock.unlock() }
+        if sharedState.cachedService == 0 { sharedState.cachedService = findAccelerator() }
+        guard sharedState.cachedService != 0 else { return (0, 0, true, false) }
+        guard let perf = perfStats(sharedState.cachedService) else {
+            IOObjectRelease(sharedState.cachedService)  // service vanished — re-match next time
+            sharedState.cachedService = 0
             return (0, 0, true, false)
         }
         return counters(from: perf)

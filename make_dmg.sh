@@ -15,13 +15,41 @@ TEMP_DMG="$STAGE_ROOT/$APP_NAME-$VERSION-rw.dmg"
 BACKGROUND_NAME="background.png"
 MOUNT_DIR=""
 DEV_NAME=""
+LOCAL_PACKAGE=false
+
+case "${1:-}" in
+    "") ;;
+    --local) LOCAL_PACKAGE=true ;;
+    *)
+        echo "Usage: $0 [--local]" >&2
+        exit 2
+        ;;
+esac
 
 if [ -z "$VERSION" ]; then
     echo "Could not read app version from Info.plist" >&2
     exit 1
 fi
 
+if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,3}([.-][0-9A-Za-z.]+)?$ ]]; then
+    echo "Invalid release version: $VERSION" >&2
+    exit 1
+fi
+
+if ! $LOCAL_PACKAGE; then
+    if [ -z "${BUSYCAT_SIGN_IDENTITY:-}" ] || [ "$BUSYCAT_SIGN_IDENTITY" = "-" ]; then
+        echo "Official DMGs require BUSYCAT_SIGN_IDENTITY with a Developer ID Application identity." >&2
+        echo "Use --local only for an ad-hoc local package." >&2
+        exit 1
+    fi
+    if [ -z "${BUSYCAT_NOTARY_PROFILE:-}" ]; then
+        echo "Official DMGs require BUSYCAT_NOTARY_PROFILE for xcrun notarytool." >&2
+        exit 1
+    fi
+fi
+
 ./make_app.sh
+codesign --verify --deep --strict "$APP_BUNDLE"
 
 if ! lipo "$APP_BUNDLE/Contents/MacOS/$APP_NAME" -verify_arch arm64; then
     echo "BusyCat releases must contain an arm64 binary." >&2
@@ -51,22 +79,8 @@ hdiutil create \
     -ov \
     "$TEMP_DMG"
 
-MOUNT_INFO="$(hdiutil attach "$TEMP_DMG" \
-    -mountrandom /Volumes \
-    -readwrite \
-    -noverify \
-    -noautoopen \
-    -nobrowse)"
-DEV_NAME="$(printf '%s\n' "$MOUNT_INFO" | awk '/\/Volumes\// {print $1; exit}')"
-MOUNT_DIR="$(printf '%s\n' "$MOUNT_INFO" | awk '/\/Volumes\// {print substr($0, index($0, "/Volumes/")); exit}')"
-
-if [ -z "$DEV_NAME" ] || [ -z "$MOUNT_DIR" ]; then
-    echo "Could not mount writable DMG" >&2
-    exit 1
-fi
-
 detach_writable_dmg() {
-    if [ -n "$DEV_NAME" ] && hdiutil info | grep -q "$DEV_NAME"; then
+    if [ -n "$DEV_NAME" ] && hdiutil info | grep -Fq "$DEV_NAME"; then
         for _ in 1 2 3 4 5; do
             if hdiutil detach "$DEV_NAME" -quiet; then
                 return 0
@@ -81,6 +95,20 @@ cleanup() {
     detach_writable_dmg || true
 }
 trap cleanup EXIT
+
+MOUNT_INFO="$(hdiutil attach "$TEMP_DMG" \
+    -mountrandom /Volumes \
+    -readwrite \
+    -noverify \
+    -noautoopen \
+    -nobrowse)"
+DEV_NAME="$(printf '%s\n' "$MOUNT_INFO" | awk '/\/Volumes\// {print $1; exit}')"
+MOUNT_DIR="$(printf '%s\n' "$MOUNT_INFO" | awk '/\/Volumes\// {print substr($0, index($0, "/Volumes/")); exit}')"
+
+if [ -z "$DEV_NAME" ] || [ -z "$MOUNT_DIR" ]; then
+    echo "Could not mount writable DMG" >&2
+    exit 1
+fi
 
 ditto "$STAGE_DIR/$APP_BUNDLE" "$MOUNT_DIR/$APP_BUNDLE"
 mkdir -p "$MOUNT_DIR/.background"
@@ -154,6 +182,16 @@ hdiutil convert "$TEMP_DMG" \
     -o "$DMG_NAME" >/dev/null
 
 rm -f "$TEMP_DMG"
+
+if ! $LOCAL_PACKAGE; then
+    codesign --force --timestamp --sign "$BUSYCAT_SIGN_IDENTITY" "$DMG_NAME"
+    codesign --verify --strict "$DMG_NAME"
+    xcrun notarytool submit "$DMG_NAME" \
+        --keychain-profile "$BUSYCAT_NOTARY_PROFILE" \
+        --wait
+    xcrun stapler staple "$DMG_NAME"
+    xcrun stapler validate "$DMG_NAME"
+fi
 
 echo "Built $DMG_NAME"
 shasum -a 256 "$DMG_NAME"

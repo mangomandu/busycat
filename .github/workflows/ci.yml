@@ -18,6 +18,10 @@ jobs:
         run: swift test
       - name: Build release with warnings as errors
         run: swift build -c release -Xswiftc -warnings-as-errors
+      - name: Package and verify app signature
+        run: |
+          ./make_app.sh
+          codesign --verify --deep --strict BusyCat.app
       - name: Verify Apple Silicon binary
         run: file .build/release/BusyCat | grep -q arm64
       - name: Verify private temperature symbols are optional

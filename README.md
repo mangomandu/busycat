@@ -144,9 +144,13 @@ dependencies.
 ```bash
 ./make_app.sh            # build BusyCat.app (ad-hoc signed)
 ./make_app.sh --install  # build + copy to /Applications + relaunch
-./make_dmg.sh            # build BusyCat-...-macOS.dmg
+./make_dmg.sh --local    # build an ad-hoc local BusyCat-...-macOS.dmg
 ./tools/render_stats_panels.sh  # regenerate Korean/English README panels
 ```
+
+Official DMGs require a Developer ID Application identity and a `notarytool`
+keychain profile; `./make_dmg.sh` signs with hardened runtime, notarizes, and
+staples the result using `BUSYCAT_SIGN_IDENTITY` and `BUSYCAT_NOTARY_PROFILE`.
 
 Quit from the cat's menu → **Quit BusyCat** (⌘Q). Enable launch at login under
 **BusyCat Settings → System → Launch at login**.

@@ -140,9 +140,13 @@ macOS Swift 툴체인(Xcode Command Line Tools)만 있으면 됩니다. 추가 �
 ```bash
 ./make_app.sh            # BusyCat.app 빌드 (애드혹 서명)
 ./make_app.sh --install  # 빌드 + /Applications 복사 + 재실행
-./make_dmg.sh            # BusyCat-...-macOS.dmg 빌드
+./make_dmg.sh --local    # 애드혹 서명의 로컬 BusyCat-...-macOS.dmg 빌드
 ./tools/render_stats_panels.sh  # README 한·영 상세 패널 다시 생성
 ```
+
+공식 DMG는 Developer ID Application 서명과 `notarytool` 키체인 프로필이
+필요합니다. `BUSYCAT_SIGN_IDENTITY`와 `BUSYCAT_NOTARY_PROFILE`을 설정한 뒤
+`./make_dmg.sh`를 실행하면 Hardened Runtime 서명·공증·스테이플을 진행합니다.
 
 종료는 고양이 메뉴 → **바쁘냥 종료** (⌘Q). 로그인 시 자동 실행은 바쁘냥의
 **설정 → 시스템 → 로그인 시 자동 실행**에서 켤 수 있습니다.

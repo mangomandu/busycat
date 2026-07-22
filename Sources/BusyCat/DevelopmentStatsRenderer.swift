@@ -3,6 +3,7 @@ import Cocoa
 
 /// Renders the menu panel for README screenshots. This file is compiled only in
 /// debug builds and is deliberately absent from the distributed app binary.
+@MainActor
 func renderDevelopmentStatsPanel(to outputURL: URL) -> Bool {
     _ = NSApplication.shared
     var metrics = Metrics()
