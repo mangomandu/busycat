@@ -1,6 +1,6 @@
 cask "busycat" do
   version "1.1.6"
-  sha256 "46b2cdf15cf64621bec01f8fff97b95fd38f5b7413fea3e6f29707fcbb1d16b5"
+  sha256 "98babb604697e50c9216a3c91c64c6f3929eaae0c9f25520cab741cec94de6bf"
 
   url "https://github.com/mangomandu/busycat/releases/download/v#{version}/BusyCat-#{version}-macOS.dmg"
   name "BusyCat"

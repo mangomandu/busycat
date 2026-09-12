@@ -26,7 +26,14 @@ the old copy. Updates remain manual; BusyCat only notifies about releases.
 
 Regression tests pass, but long-duration use, real sleep/reboot cycles and full
 macOS 13 device validation are not claimed. GPU compute is an estimate and
-temperature availability varies by hardware/OS. See [handoff notes](HANDOFF.md).
+temperature availability varies by hardware/OS. See [handoff notes](https://github.com/mangomandu/busycat/blob/v1.1.6/docs/HANDOFF.md).
+
+DMG build source: `a5005d6273ad0fbf70f43cc3863b76508942598c`.
+The release tag additionally records the final checksum and handoff metadata;
+application source and bundle version are unchanged from that build commit.
+
+SHA-256 (`BusyCat-1.1.6-macOS.dmg`):
+`98babb604697e50c9216a3c91c64c6f3929eaae0c9f25520cab741cec94de6bf`
 
 ---
 
