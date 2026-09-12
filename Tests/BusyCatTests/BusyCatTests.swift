@@ -366,6 +366,8 @@ struct BusyCatTests {
         }
         let release = try paths([])
         let local = try paths(["--local"])
+        let unnotarized = try paths(["--unnotarized-release"])
+        #expect(unnotarized == release)
         #expect(release.count == 4 && local.count == 4)
         #expect(Set(release).isDisjoint(with: Set(local)))
         #expect(release.first?.hasSuffix("-macOS.dmg") == true)

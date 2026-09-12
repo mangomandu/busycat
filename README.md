@@ -9,8 +9,12 @@ and embeddings makes the cat run too.
 
 🇰🇷 [한국어 README](README.ko.md)
 
+**Project status:** Active development has ended. No further releases or support
+schedule are promised. The source remains available for future resumption;
+see the [handoff and verification notes (Korean)](docs/HANDOFF.md).
+
 <p align="center">
-  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.5-macOS.dmg"><strong>Download for Apple Silicon Mac (.dmg)</strong></a>
+  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.6-macOS.dmg"><strong>Download for Apple Silicon Mac (.dmg)</strong></a>
   <br>
   <sub>Open the DMG, then drag <code>BusyCat.app</code> to <code>Applications</code>. See <a href="https://github.com/mangomandu/busycat/releases/latest">GitHub Releases</a> for release notes.</sub>
 </p>
@@ -100,7 +104,7 @@ The current build requires an **Apple Silicon Mac (M1 or newer) running macOS 13
 Ventura or later**. Intel Macs are not supported.
 
 1. Download the latest DMG:
-   [BusyCat-1.1.5-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.5-macOS.dmg)
+   [BusyCat-1.1.6-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.6-macOS.dmg)
 2. Open the DMG.
 3. Drag `BusyCat.app` to `Applications`.
 
@@ -148,9 +152,14 @@ dependencies.
 ./tools/render_stats_panels.sh  # regenerate Korean/English README panels
 ```
 
-Official DMGs require a Developer ID Application identity and a `notarytool`
+By default, official DMGs require a Developer ID Application identity and a `notarytool`
 keychain profile; `./make_dmg.sh` signs with hardened runtime, notarizes, and
 staples the result using `BUSYCAT_SIGN_IDENTITY` and `BUSYCAT_NOTARY_PROFILE`.
+
+The final maintenance release 1.1.6 is intentionally **not notarized**. Use
+`./make_dmg.sh --unnotarized-release` to explicitly build this distribution type.
+It uses ad-hoc signing and retains clean-commit, test and final checksum checks.
+Do not present it as Developer ID signed or notarized.
 
 Before publishing, verify the final DMG against the Homebrew checksum:
 
@@ -161,7 +170,7 @@ commits while packaging. Local builds/installations and `--local` packages are
 not subject to this release gate.
 
 ```bash
-./tools/check_release_consistency.sh --artifact BusyCat-1.1.5-macOS.dmg
+./tools/check_release_consistency.sh --artifact BusyCat-1.1.6-macOS.dmg
 ```
 
 Use the release version's filename. Official packaging runs this check automatically

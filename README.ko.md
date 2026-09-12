@@ -9,8 +9,12 @@
 
 🇺🇸 [English README](README.md)
 
+**프로젝트 상태:** 적극적인 개발을 종료했습니다. 추가 릴리스나 지원 일정은
+약속하지 않으며, 필요 시 재개할 수 있도록 소스를 공개해 둡니다.
+[작업 정리·검증 결과·재개 안내](docs/HANDOFF.md)를 참고하세요.
+
 <p align="center">
-  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.5-macOS.dmg"><strong>Apple Silicon Mac용 다운로드 (.dmg)</strong></a>
+  <a href="https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.6-macOS.dmg"><strong>Apple Silicon Mac용 다운로드 (.dmg)</strong></a>
   <br>
   <sub>DMG를 열고 <code>BusyCat.app</code>을 <code>Applications</code>로 드래그하세요. 변경 내용은 <a href="https://github.com/mangomandu/busycat/releases/latest">GitHub Releases</a>에서 볼 수 있습니다.</sub>
 </p>
@@ -96,7 +100,7 @@ RunCat이 GPU를 못 넣는 건 **앱스토어 = 샌드박스** 앱이라 GPU·�
 지원하지 않습니다.
 
 1. 최신 DMG 다운로드:
-   [BusyCat-1.1.5-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.5-macOS.dmg)
+   [BusyCat-1.1.6-macOS.dmg](https://github.com/mangomandu/busycat/releases/latest/download/BusyCat-1.1.6-macOS.dmg)
 2. DMG 열기
 3. `BusyCat.app`을 `Applications`로 드래그
 
@@ -144,9 +148,14 @@ macOS Swift 툴체인(Xcode Command Line Tools)만 있으면 됩니다. 추가 �
 ./tools/render_stats_panels.sh  # README 한·영 상세 패널 다시 생성
 ```
 
-공식 DMG는 Developer ID Application 서명과 `notarytool` 키체인 프로필이
+기본 공식 DMG 경로는 Developer ID Application 서명과 `notarytool` 키체인 프로필이
 필요합니다. `BUSYCAT_SIGN_IDENTITY`와 `BUSYCAT_NOTARY_PROFILE`을 설정한 뒤
 `./make_dmg.sh`를 실행하면 Hardened Runtime 서명·공증·스테이플을 진행합니다.
+
+최종 유지보수 릴리스 1.1.6은 **미공증**으로 배포합니다.
+`./make_dmg.sh --unnotarized-release`로 명시적으로 선택하며, 애드혹 서명을 사용하고
+깨끗한 커밋·테스트·최종 해시 검사는 유지합니다. Developer ID 서명이나 공증을
+받은 배포본으로 표시하지 않습니다.
 
 배포 전에는 최종 DMG와 Homebrew 해시가 일치하는지 확인합니다.
 
@@ -156,7 +165,7 @@ macOS Swift 툴체인(Xcode Command Line Tools)만 있으면 됩니다. 추가 �
 로컬 빌드·설치와 `--local` 패키징에는 이 배포 전용 제한을 적용하지 않습니다.
 
 ```bash
-./tools/check_release_consistency.sh --artifact BusyCat-1.1.5-macOS.dmg
+./tools/check_release_consistency.sh --artifact BusyCat-1.1.6-macOS.dmg
 ```
 
 파일명은 배포할 버전에 맞춥니다. 공식 패키징은 서명·스테이플이 끝난 뒤 이 검사를

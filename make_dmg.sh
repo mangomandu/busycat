@@ -18,17 +18,19 @@ BACKGROUND_NAME="background.png"
 MOUNT_DIR=""
 DEV_NAME=""
 LOCAL_PACKAGE=false
+UNNOTARIZED_RELEASE=false
 
 case "${1:-}" in
     "") ;;
     --local) LOCAL_PACKAGE=true ;;
+    --unnotarized-release) UNNOTARIZED_RELEASE=true ;;
     *)
-        echo "Usage: $0 [--local]" >&2
+        echo "Usage: $0 [--local|--unnotarized-release]" >&2
         exit 2
         ;;
 esac
 if [ "$#" -gt 1 ]; then
-    echo "Usage: $0 [--local]" >&2
+    echo "Usage: $0 [--local|--unnotarized-release]" >&2
     exit 2
 fi
 
@@ -51,7 +53,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || [[ "$VERSION" =~ (^|\.)0[0-9
     exit 1
 fi
 
-if ! $LOCAL_PACKAGE; then
+if ! $LOCAL_PACKAGE && ! $UNNOTARIZED_RELEASE; then
     if [ -z "${BUSYCAT_SIGN_IDENTITY:-}" ] || [ "$BUSYCAT_SIGN_IDENTITY" = "-" ]; then
         echo "Official DMGs require BUSYCAT_SIGN_IDENTITY with a Developer ID Application identity." >&2
         echo "Use --local only for an ad-hoc local package." >&2
@@ -68,10 +70,15 @@ if ! $LOCAL_PACKAGE; then
     RELEASE_COMMIT="$(git rev-parse --verify HEAD)"
     bash tools/check_release_preflight.sh
 fi
-./make_app.sh
+if $UNNOTARIZED_RELEASE; then
+    echo "WARNING: Building an explicitly unnotarized public release."
+    BUSYCAT_SIGN_IDENTITY=- ./make_app.sh
+else
+    ./make_app.sh
+fi
 codesign --verify --deep --strict "$APP_BUNDLE"
 
-if ! $LOCAL_PACKAGE; then
+if ! $LOCAL_PACKAGE && ! $UNNOTARIZED_RELEASE; then
     signing_details="$(LC_ALL=C codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
     if ! grep -Fq "Authority=Developer ID Application:" <<<"$signing_details"; then
         echo "Official DMGs require a Developer ID Application signature." >&2
@@ -226,6 +233,8 @@ rm -f "$TEMP_DMG"
 
 if ! $LOCAL_PACKAGE; then
     bash tools/check_release_preflight.sh --verify-commit "$RELEASE_COMMIT"
+fi
+if ! $LOCAL_PACKAGE && ! $UNNOTARIZED_RELEASE; then
     codesign --force --timestamp --sign "$BUSYCAT_SIGN_IDENTITY" "$PENDING_DMG"
     codesign --verify --strict "$PENDING_DMG"
     xcrun notarytool submit "$PENDING_DMG" \
