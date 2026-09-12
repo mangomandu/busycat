@@ -154,6 +154,12 @@ staples the result using `BUSYCAT_SIGN_IDENTITY` and `BUSYCAT_NOTARY_PROFILE`.
 
 Before publishing, verify the final DMG against the Homebrew checksum:
 
+Official packaging first requires a clean Git checkout (including untracked
+files) and runs `test.sh`. It checks that the same commit and clean checkout
+remain in place before notarization and finalizing the DMG. Do not edit or switch
+commits while packaging. Local builds/installations and `--local` packages are
+not subject to this release gate.
+
 ```bash
 ./tools/check_release_consistency.sh --artifact BusyCat-1.1.5-macOS.dmg
 ```

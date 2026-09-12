@@ -64,6 +64,10 @@ if ! $LOCAL_PACKAGE; then
 fi
 
 ./tools/check_release_consistency.sh
+if ! $LOCAL_PACKAGE; then
+    RELEASE_COMMIT="$(git rev-parse --verify HEAD)"
+    bash tools/check_release_preflight.sh
+fi
 ./make_app.sh
 codesign --verify --deep --strict "$APP_BUNDLE"
 
@@ -221,6 +225,7 @@ hdiutil convert "$TEMP_DMG" \
 rm -f "$TEMP_DMG"
 
 if ! $LOCAL_PACKAGE; then
+    bash tools/check_release_preflight.sh --verify-commit "$RELEASE_COMMIT"
     codesign --force --timestamp --sign "$BUSYCAT_SIGN_IDENTITY" "$PENDING_DMG"
     codesign --verify --strict "$PENDING_DMG"
     xcrun notarytool submit "$PENDING_DMG" \
@@ -232,6 +237,9 @@ if ! $LOCAL_PACKAGE; then
 fi
 
 hdiutil verify "$PENDING_DMG" >/dev/null
+if ! $LOCAL_PACKAGE; then
+    bash tools/check_release_preflight.sh --verify-commit "$RELEASE_COMMIT"
+fi
 mv -f "$PENDING_DMG" "$DMG_NAME"
 trap - EXIT
 
@@ -241,5 +249,6 @@ shasum -a 256 "$DMG_NAME"
 # Verify the final bytes, after notarization/stapling. On mismatch, preserve the
 # completed DMG so the Cask can be updated and checked without another build.
 if ! $LOCAL_PACKAGE; then
+    echo "Release source commit: $RELEASE_COMMIT"
     ./tools/check_release_consistency.sh --artifact "$DMG_NAME"
 fi

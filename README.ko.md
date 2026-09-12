@@ -150,6 +150,11 @@ macOS Swift 툴체인(Xcode Command Line Tools)만 있으면 됩니다. 추가 �
 
 배포 전에는 최종 DMG와 Homebrew 해시가 일치하는지 확인합니다.
 
+공식 패키징은 미커밋 변경(추적되지 않은 파일 포함)이 없는 Git 작업 폴더에서만
+시작하며, 먼저 `test.sh`를 실행합니다. 공증 직전과 DMG 확정 직전에도 같은 커밋과
+깨끗한 상태인지 재확인하므로 패키징 중에는 파일 수정이나 커밋 전환을 하지 마세요.
+로컬 빌드·설치와 `--local` 패키징에는 이 배포 전용 제한을 적용하지 않습니다.
+
 ```bash
 ./tools/check_release_consistency.sh --artifact BusyCat-1.1.5-macOS.dmg
 ```

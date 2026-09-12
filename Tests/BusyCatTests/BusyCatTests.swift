@@ -303,6 +303,51 @@ struct BusyCatTests {
         }
     }
 
+    @Test(arguments: ["clean", "dirty", "untracked", "failedTests", "changedDuringTests", "wrongCommit"])
+    func officialReleaseRequiresCleanTestedCommit(scenario: String) throws {
+        let manager = FileManager.default
+        let fixture = manager.temporaryDirectory.appendingPathComponent("BusyCat preflight \(UUID().uuidString)")
+        try manager.createDirectory(at: fixture.appendingPathComponent("tools"), withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: fixture) }
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let script = fixture.appendingPathComponent("tools/check_release_preflight.sh")
+        try manager.copyItem(at: root.appendingPathComponent("tools/check_release_preflight.sh"), to: script)
+        let testBody: String
+        switch scenario {
+        case "failedTests": testBody = "exit 1"
+        case "changedDuringTests": testBody = "printf changed >> tracked.txt"
+        default: testBody = "exit 0"
+        }
+        let testScript = fixture.appendingPathComponent("test.sh")
+        try ("#!/bin/bash\n" + testBody + "\n").write(to: testScript, atomically: true, encoding: .utf8)
+        try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: testScript.path)
+        try Data("original".utf8).write(to: fixture.appendingPathComponent("tracked.txt"))
+        func git(_ arguments: [String]) throws {
+            _ = try #require(ThermalReader.runCommand(
+                executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+                arguments: ["-C", fixture.path, "-c", "user.name=BusyCat Tests",
+                            "-c", "user.email=tests@example.invalid", "-c", "commit.gpgsign=false"] + arguments,
+                timeout: 3))
+        }
+        try git(["-c", "init.templateDir=", "init"])
+        try git(["add", "."])
+        try git(["commit", "-m", "Fixture"])
+        if scenario == "dirty" || scenario == "untracked" {
+            try Data("changed".utf8).write(to: fixture.appendingPathComponent(
+                scenario == "dirty" ? "tracked.txt" : "untracked.txt"))
+        }
+        var arguments = [script.path]
+        if scenario == "wrongCommit" { arguments += ["--verify-commit", String(repeating: "0", count: 40)] }
+        let result = ThermalReader.runCommand(
+            executableURL: URL(fileURLWithPath: "/bin/bash"), arguments: arguments, timeout: 3)
+        if scenario == "clean" {
+            #expect(String(decoding: try #require(result), as: UTF8.self).contains("Release preflight passed"))
+        } else {
+            #expect(result == nil)
+        }
+    }
+
     @Test func localDMGPathsCannotReplaceReleaseArtifacts() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
