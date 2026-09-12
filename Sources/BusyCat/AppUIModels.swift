@@ -31,6 +31,18 @@ func appText(_ ko: String, _ en: String) -> String {
     AppLanguage.usesKorean ? ko : en
 }
 
+struct UpdateMenuPresentation {
+    let checking: Bool
+    let availableVersion: String?
+
+    var enabled: Bool { !checking }
+    var title: String {
+        if checking { return appText("업데이트 확인 중…", "Checking for Updates…") }
+        if let v = availableVersion { return appText("🆕 새 버전 v\(v) 받기", "🆕 Get v\(v)") }
+        return appText("업데이트 확인", "Check for Updates")
+    }
+}
+
 func countText(_ count: Int, _ koUnit: String, _ enSingular: String, _ enPlural: String) -> String {
     if AppLanguage.usesKorean {
         return "\(count)\(koUnit)"

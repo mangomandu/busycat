@@ -140,7 +140,7 @@ macOS Swift 툴체인(Xcode Command Line Tools)만 있으면 됩니다. 추가 �
 ```bash
 ./make_app.sh            # BusyCat.app 빌드 (애드혹 서명)
 ./make_app.sh --install  # 빌드 + /Applications 복사 + 재실행
-./make_dmg.sh --local    # 애드혹 서명의 로컬 BusyCat-...-macOS.dmg 빌드
+./make_dmg.sh --local    # 정식 배포와 별개인 애드혹 BusyCat-...-macOS-local.dmg 빌드
 ./tools/render_stats_panels.sh  # README 한·영 상세 패널 다시 생성
 ```
 

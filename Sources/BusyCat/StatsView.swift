@@ -199,7 +199,24 @@ final class StatsView: NSView {
     }
 
     private func sectionHeight(_ s: Section) -> CGFloat {
-        titleH + CGFloat(s.subs.count) * subH + (s.graph == .none ? 0 : graphH + 4)
+        titleH + s.subs.map(subtextHeight).reduce(0, +) + (s.graph == .none ? 0 : graphH + 4)
+    }
+
+    private var subtextAttributes: [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byCharWrapping
+        return [.font: subFont, .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: paragraph]
+    }
+
+    // The same constrained layout is used for measurement and drawing, including
+    // unbroken IPv6 addresses that cannot fit in a single sub-row.
+    func subtextHeight(_ text: String) -> CGFloat {
+        let bounds = (text as NSString).boundingRect(
+            with: NSSize(width: panelWidth - textX - padX, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: subtextAttributes)
+        return max(subH, ceil(bounds.height))
     }
 
     private func resize() {
@@ -242,9 +259,12 @@ final class StatsView: NSView {
             drawTitle(s, at: NSPoint(x: textX, y: y))
             y += titleH
             for sub in s.subs {
-                (sub as NSString).draw(at: NSPoint(x: textX, y: y),
-                    withAttributes: [.font: subFont, .foregroundColor: NSColor.secondaryLabelColor])
-                y += subH
+                let height = subtextHeight(sub)
+                (sub as NSString).draw(
+                    with: NSRect(x: textX, y: y, width: panelWidth - textX - padX, height: height),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: subtextAttributes)
+                y += height
             }
             if s.graph != .none {
                 let r = NSRect(x: textX, y: y + 2,

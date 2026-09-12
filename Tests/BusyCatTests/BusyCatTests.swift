@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Testing
 @testable import BusyCat
 
@@ -225,5 +226,143 @@ struct BusyCatTests {
             timeout: 0.05)
         #expect(result == nil)
         #expect(Date().timeIntervalSince(started) < 1.5)
+    }
+
+    @Test func externalCommandDrainsLargeOutputAndRejectsOverflow() {
+        let head = URL(fileURLWithPath: "/usr/bin/head")
+        let output = ThermalReader.runCommand(
+            executableURL: head, arguments: ["-c", "1048576", "/dev/zero"], timeout: 3)
+        #expect(output?.count == 1_048_576)
+        #expect(output?.allSatisfy { $0 == 0 } == true)
+        #expect(ThermalReader.runCommand(
+            executableURL: head, arguments: ["-c", "5242880", "/dev/zero"], timeout: 3) == nil)
+    }
+
+    @Test func externalCommandHandlesEmptyFailureAndInheritedPipe() {
+        let shell = URL(fileURLWithPath: "/bin/sh")
+        #expect(ThermalReader.runCommand(
+            executableURL: shell, arguments: ["-c", "exit 0"], timeout: 1) == Data())
+        #expect(ThermalReader.runCommand(
+            executableURL: shell, arguments: ["-c", "printf partial; exit 1"], timeout: 1) == nil)
+        let started = Date()
+        #expect(ThermalReader.runCommand(
+            executableURL: shell, arguments: ["-c", "sleep 1 & exit 0"], timeout: 0.05) == nil)
+        #expect(Date().timeIntervalSince(started) < 0.8)
+        #expect(ThermalReader.runCommand(
+            executableURL: shell, arguments: [], timeout: .nan) == nil)
+    }
+
+    @Test func localDMGPathsCannotReplaceReleaseArtifacts() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let script = root.appendingPathComponent("make_dmg.sh")
+        let source = try String(contentsOf: script, encoding: .utf8)
+        // Execute only argument/path validation, never build, mount, sign or notarize.
+        let boundary = try #require(source.range(of: "\n./tools/check_release_consistency.sh"))
+        let prefix = "BUSYCAT_SIGN_IDENTITY=test-only\nBUSYCAT_NOTARY_PROFILE=test-only\n"
+            + source[..<boundary.lowerBound]
+            + "\nprintf '%s\\n' \"$DMG_NAME\" \"$STAGE_DIR\" \"$TEMP_DMG\" \"$PENDING_DMG\"\n"
+        func paths(_ args: [String]) throws -> [String] {
+            let data = try #require(ThermalReader.runCommand(
+                executableURL: URL(fileURLWithPath: "/bin/bash"),
+                arguments: ["-c", prefix, script.path] + args, timeout: 2))
+            return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+        }
+        let release = try paths([])
+        let local = try paths(["--local"])
+        #expect(release.count == 4 && local.count == 4)
+        #expect(Set(release).isDisjoint(with: Set(local)))
+        #expect(release.first?.hasSuffix("-macOS.dmg") == true)
+        #expect(local.first?.hasSuffix("-macOS-local.dmg") == true)
+    }
+
+    @Test func updateMenuPresentationReflectsCheckingAndAvailability() {
+        let checking = UpdateMenuPresentation(checking: true, availableVersion: nil)
+        #expect(!checking.enabled)
+        let finished = UpdateMenuPresentation(checking: false, availableVersion: nil)
+        #expect(finished.enabled)
+        #expect(finished.title != checking.title)
+        let available = UpdateMenuPresentation(checking: false, availableVersion: "1.2.0")
+        #expect(available.enabled)
+        #expect(available.title.contains("1.2.0"))
+    }
+
+    @Test func sleepInvalidatesHistoryAndInFlightSamples() {
+        var session = SamplingSession()
+        let beforeSleep = session.generation
+        session.appendCPU(70)
+        session.sleep()
+        #expect(session.cpuHistory.isEmpty)
+        #expect(!session.accepts(beforeSleep))
+        session.appendCPU(90)
+        #expect(session.cpuHistory.isEmpty)
+        session.wake()
+        #expect(!session.accepts(beforeSleep))
+        #expect(session.accepts(session.generation))
+        session.appendCPU(10)
+        #expect(session.cpuHistory == [10])
+        let beforeSecondWake = session.generation
+        session.wake()
+        #expect(session.cpuHistory.isEmpty)
+        #expect(!session.accepts(beforeSecondWake))
+    }
+
+    @Test func cpuSamplingGapPrimesFreshCountersAndAverage() {
+        let sampler = SystemSampler()
+        #expect(sampler.updateCPU(user: 0, system: 0, idle: 0, nice: 0).total == 0)
+        #expect(sampler.updateCPU(user: 80, system: 20, idle: 0, nice: 0).total == 100)
+        _ = sampler.sampleLight(fields: [])
+        // Counter changes throughout the unsampled interval are discarded.
+        #expect(sampler.updateCPU(user: 800, system: 200, idle: 9000, nice: 0).total == 0)
+        #expect(sampler.updateCPU(user: 800, system: 200, idle: 9000, nice: 0).total == 0)
+        let fresh = sampler.updateCPU(user: 810, system: 200, idle: 9090, nice: 0)
+        #expect(fresh.total == 10)
+        #expect(fresh.user == 10 && fresh.system == 0)
+        sampler.resetFastHistory()
+        #expect(sampler.updateCPU(user: 1000, system: 1000, idle: 10000, nice: 0).total == 0)
+    }
+
+    @Test func gpuSamplingGapDiscardsOldAverage() {
+        let sampler = SystemSampler()
+        var metrics = Metrics()
+        sampler.updateGPU((90, 10, true, true), into: &metrics)
+        #expect(metrics.gpuCompute == 80)
+        _ = sampler.sampleLight(fields: [])
+        sampler.updateGPU((15, 5, true, true), into: &metrics)
+        #expect(metrics.gpuRaw == 15 && metrics.gpuRender == 5)
+        #expect(metrics.gpuCompute == 10)
+        sampler.resetFastHistory()
+        sampler.updateGPU((30, 0, true, true), into: &metrics)
+        #expect(metrics.gpuCompute == 30)
+        sampler.updateGPU((0, 0, true, false), into: &metrics)
+        sampler.updateGPU((12, 12, false, true), into: &metrics)
+        #expect(metrics.gpuAvailable && metrics.gpuCompute == 12)
+    }
+
+    @Test @MainActor func ipv6SubtextWrapsAndExpandsPanel() {
+        let view = StatsView()
+        for label in ["로컬 IP", "Local IP"] {
+            #expect(view.subtextHeight("\(label): 192.168.0.2") == 15)
+            #expect(view.subtextHeight("\(label): ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff") > 15)
+        }
+        var metrics = Metrics()
+        metrics.localIP = "192.168.0.2"
+        view.update(metrics, history: [])
+        let shortHeight = view.frame.height
+        metrics.localIP = "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+        view.update(metrics, history: [])
+        #expect(view.frame.width == 250)
+        #expect(view.frame.height > shortHeight)
+    }
+
+    @Test func smcTemperaturePreservesSignedFixedPointAndFloat() {
+        #expect(SMCValueDecoder.temperature([0, 0xF6], type: "sp78") == -10)
+        #expect(SMCValueDecoder.temperature([0x80, 0xFF], type: "sp78") == -0.5)
+        #expect(SMCValueDecoder.temperature([0x80, 42], type: "sp78") == 42.5)
+        #expect(SMCValueDecoder.temperature([0, 0], type: "sp78") == 0)
+        #expect(SMCValueDecoder.temperature([0x42, 0x2A, 0, 0], type: "flt ") == 42.5)
+        #expect(SMCValueDecoder.temperature([0], type: "sp78") == nil)
+        #expect(SMCValueDecoder.temperature([0], type: "flt ") == nil)
+        #expect(SMCValueDecoder.temperature([0, 0], type: "unknown") == nil)
     }
 }

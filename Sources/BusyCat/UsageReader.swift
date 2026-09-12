@@ -141,12 +141,24 @@ final class SystemSampler: @unchecked Sendable {
 
     deinit { mach_port_deallocate(mach_task_self_, host) }
 
-    func resetFastHistory() {
+    private func resetCPUHistory() {
         cpuPrimed = false
         cpuEMAPrimed = false
+        sysEMA = 0
+        userEMA = 0
+    }
+
+    private func resetGPUHistory() {
+        gpuEMAPrimed = false
+        gpuRawEMA = 0
+        gpuRenderEMA = 0
+    }
+
+    func resetFastHistory() {
+        resetCPUHistory()
+        resetGPUHistory()
         netPrimed = false
         netEMAPrimed = false
-        gpuEMAPrimed = false
     }
 
     /// Cheap metrics needed every second to drive the cat (CPU/GPU/memory are all
@@ -158,32 +170,13 @@ final class SystemSampler: @unchecked Sendable {
             m.cpu = c.total
             m.cpuSystem = c.system
             m.cpuUser = c.user
+        } else {
+            resetCPUHistory()
         }
         if fields.contains(.gpu) {
-            let g = GPUReader.stats()
-            if g.available {
-                if gpuEMAPrimed {
-                    gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
-                    gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
-                } else {
-                    gpuRawEMA = g.raw
-                    gpuRenderEMA = g.render
-                    gpuEMAPrimed = true
-                }
-            } else {
-                gpuRawEMA = 0
-                gpuRenderEMA = 0
-                gpuEMAPrimed = false
-            }
-            gpuSubtractRenderer = g.subtractRenderer
-            m.gpuAvailable = g.available
-            m.gpuRaw = gpuRawEMA
-            m.gpuRender = gpuRenderEMA
-            // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
-            // so ticks where integer render momentarily ≥ raw don't bias the cat low.
-            m.gpuCompute = gpuSubtractRenderer
-                ? MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
-                : gpuRawEMA
+            updateGPU(GPUReader.stats(), into: &m)
+        } else {
+            resetGPUHistory()
         }
         if fields.contains(.memory) {
             let mem = memory()
@@ -195,6 +188,33 @@ final class SystemSampler: @unchecked Sendable {
         }
         m.thermalState = ProcessInfo.processInfo.thermalState.rawValue
         return m
+    }
+
+    func updateGPU(
+        _ g: (raw: Double, render: Double, subtractRenderer: Bool, available: Bool),
+        into m: inout Metrics
+    ) {
+        if g.available {
+            if gpuEMAPrimed {
+                gpuRawEMA = gpuRawEMA * emaAlpha + g.raw * (1 - emaAlpha)
+                gpuRenderEMA = gpuRenderEMA * emaAlpha + g.render * (1 - emaAlpha)
+            } else {
+                gpuRawEMA = g.raw
+                gpuRenderEMA = g.render
+                gpuEMAPrimed = true
+            }
+        } else {
+            resetGPUHistory()
+        }
+        gpuSubtractRenderer = g.subtractRenderer
+        m.gpuAvailable = g.available
+        m.gpuRaw = gpuRawEMA
+        m.gpuRender = gpuRenderEMA
+        // Compute from the *smoothed* raw/render (not the pre-subtracted instant),
+        // so ticks where integer render momentarily ≥ raw don't bias the cat low.
+        m.gpuCompute = gpuSubtractRenderer
+            ? MetricMath.gpuCompute(raw: gpuRawEMA, render: gpuRenderEMA)
+            : gpuRawEMA
     }
 
     /// Lightweight temperature for menu-bar text. This reads only temperature
@@ -271,12 +291,16 @@ final class SystemSampler: @unchecked Sendable {
                 host_statistics(host, HOST_CPU_LOAD_INFO, reb, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return (0, 0, 0) }
+        guard result == KERN_SUCCESS else {
+            resetCPUHistory()
+            return (0, 0, 0)
+        }
+        return updateCPU(user: info.cpu_ticks.0, system: info.cpu_ticks.1,
+                         idle: info.cpu_ticks.2, nice: info.cpu_ticks.3)
+    }
 
-        let user = info.cpu_ticks.0     // USER
-        let system = info.cpu_ticks.1   // SYSTEM
-        let idle = info.cpu_ticks.2     // IDLE
-        let nice = info.cpu_ticks.3     // NICE
+    func updateCPU(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)
+        -> (total: Double, system: Double, user: Double) {
         // Normalized usage like Activity Monitor: user (incl. nice) and system as a
         // fraction of total, so system + user + idle == 100 exactly and the panel's
         // breakdown stays internally consistent. Each smoothed with its own EMA.
@@ -636,7 +660,15 @@ enum ThermalReader {
         arguments: [String],
         timeout: TimeInterval
     ) -> Data? {
+        guard timeout.isFinite, timeout > 0 else { return nil }
         let pipe = Pipe()
+        defer {
+            pipe.fileHandleForReading.closeFile()
+            pipe.fileHandleForWriting.closeFile()
+        }
+        let fd = pipe.fileHandleForReading.fileDescriptor
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1 else { return nil }
         let task = Process()
         task.executableURL = executableURL
         task.arguments = arguments
@@ -651,16 +683,46 @@ enum ThermalReader {
         } catch {
             return nil
         }
-        if exited.wait(timeout: .now() + max(0, timeout)) == .timedOut {
-            if task.isRunning { task.terminate() }
-            if exited.wait(timeout: .now() + .milliseconds(500)) == .timedOut {
-                if task.isRunning { kill(task.processIdentifier, SIGKILL) }
-                _ = exited.wait(timeout: .now() + .milliseconds(500))
+        pipe.fileHandleForWriting.closeFile()
+        defer {
+            if task.isRunning {
+                task.terminate()
+                if exited.wait(timeout: .now() + .milliseconds(500)) == .timedOut {
+                    if task.isRunning { kill(task.processIdentifier, SIGKILL) }
+                    _ = exited.wait(timeout: .now() + .milliseconds(500))
+                }
             }
-            return nil
         }
-        guard task.terminationStatus == 0 else { return nil }
-        return pipe.fileHandleForReading.readDataToEndOfFile()
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        let outputLimit = 4 * 1024 * 1024
+        var output = Data()
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        // Drain while the child runs: waiting for exit first fills the pipe and
+        // blocks large writes. Nonblocking reads also bound inherited open pipes.
+        while true {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { return nil }
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            if count > 0 {
+                guard output.count + count <= outputLimit else { return nil }
+                output.append(contentsOf: buffer.prefix(count))
+            } else if count == 0 {
+                break
+            } else if errno == EINTR {
+                continue
+            } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                let result = poll(&descriptor, 1, Int32(max(1, min(50, remaining * 1000))))
+                if result < 0 && errno != EINTR { return nil }
+            } else {
+                return nil
+            }
+        }
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0,
+              exited.wait(timeout: .now() + remaining) == .success,
+              task.terminationStatus == 0 else { return nil }
+        return output
     }
 
     private static func runPMSetTherm() -> String {
@@ -886,18 +948,7 @@ private final class SMCReader: @unchecked Sendable {
     }
 
     private func decodeTemperature(_ data: [UInt8], type: UInt32) -> Double? {
-        let typeName = SMCReader.fourCCString(type)
-        switch typeName {
-        case "sp78":
-            guard data.count == 2 else { return nil }
-            return Double(data[1] & 0x7F) + Double(data[0]) / 256.0
-        case "flt ":
-            guard data.count == 4 else { return nil }
-            let bits = data.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-            return Double(Float32(bitPattern: bits))
-        default:
-            return nil
-        }
+        SMCValueDecoder.temperature(data, type: SMCReader.fourCCString(type))
     }
 
     private static func fourCC(_ string: String) -> UInt32 {

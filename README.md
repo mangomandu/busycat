@@ -144,7 +144,7 @@ dependencies.
 ```bash
 ./make_app.sh            # build BusyCat.app (ad-hoc signed)
 ./make_app.sh --install  # build + copy to /Applications + relaunch
-./make_dmg.sh --local    # build an ad-hoc local BusyCat-...-macOS.dmg
+./make_dmg.sh --local    # build an ad-hoc BusyCat-...-macOS-local.dmg (separate from releases)
 ./tools/render_stats_panels.sh  # regenerate Korean/English README panels
 ```
 

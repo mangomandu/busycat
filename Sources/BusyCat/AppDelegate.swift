@@ -41,7 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sampleTimer: Timer?
     private var updateTimer: Timer?
     private var currentInterval: TimeInterval = 0.2
-    private var asleep = false
+    private var sampleSession = SamplingSession()
+    private var asleep: Bool { sampleSession.asleep }
 
     private let sampling = SamplingCoordinator()
     private var samplingInFlight = false
@@ -104,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private let statsView = StatsView()
-    private var cpuHistory: [Double] = []
+    private var cpuHistory: [Double] { sampleSession.cpuHistory }
     private var updateItem: NSMenuItem!
     private var speedStatusItem: NSMenuItem!
     private var speedStatusView: SpeedStatusRowView?
@@ -482,12 +483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 action: #selector(updateItemClicked), keyEquivalent: "")
         updateItem.target = self
         menu.addItem(updateItem)
-        if updateCheckInFlight {
-            updateItem.title = appText("업데이트 확인 중…", "Checking for Updates…")
-            updateItem.action = nil
-        } else if let availableUpdate {
-            setUpdateAvailable(availableUpdate)
-        }
+        refreshUpdateItem()
         let about = NSMenuItem(title: appText("바쁘냥 정보…", "About BusyCat…"),
                                action: #selector(showAbout), keyEquivalent: "")
         about.target = self
@@ -754,10 +750,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         samplingInFlight = true
         fullSamplingInFlight = full
+        let generation = sampleSession.generation
         sampling.sample(full: full, fields: fields) { [weak self] sample in
             guard let self else { return }
             self.samplingInFlight = false
             self.fullSamplingInFlight = false
+            guard self.sampleSession.accepts(generation) else {
+                self.fullSamplePending = false
+                if !self.asleep { self.requestSample(full: self.menuOpen) }
+                return
+            }
             self.applySample(sample, full: full, fields: fields)
             if self.fullSamplePending {
                 self.fullSamplePending = false
@@ -798,9 +800,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        MetricMath.updateHistory(
-            &cpuHistory,
-            sample: fields.contains(.cpu) ? latest.cpu : nil)
+        sampleSession.appendCPU(fields.contains(.cpu) ? latest.cpu : nil)
         updateStatusAccessibility()
         refreshPresentation()
     }
@@ -1108,18 +1108,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard !updateCheckInFlight else { return }
         updateCheckInFlight = true
-        updateItem.title = appText("업데이트 확인 중…", "Checking for Updates…")
-        updateItem.action = nil
+        refreshUpdateItem()
         Updater.check { [weak self] result in
             guard let self else { return }
             self.updateCheckInFlight = false
+            self.refreshUpdateItem()
             switch result {
             case .updateAvailable(let v):
                 self.setUpdateAvailable(v)
                 NSWorkspace.shared.open(Updater.releasesPage)
             case .upToDate:
-                self.updateItem.title = appText("업데이트 확인", "Check for Updates")
-                self.updateItem.action = #selector(self.updateItemClicked)
                 NSApp.activate(ignoringOtherApps: true)
                 let a = NSAlert()
                 a.messageText = appText("최신 버전입니다", "You're up to date")
@@ -1128,8 +1126,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "Current v\(Updater.currentVersion) is the latest.")
                 a.runModal()
             case .failed:
-                self.updateItem.title = appText("업데이트 확인", "Check for Updates")
-                self.updateItem.action = #selector(self.updateItemClicked)
                 NSApp.activate(ignoringOtherApps: true)
                 let a = NSAlert()
                 a.alertStyle = .warning
@@ -1144,8 +1140,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setUpdateAvailable(_ v: String) {
         availableUpdate = v
-        updateItem.title = appText("🆕 새 버전 v\(v) 받기", "🆕 Get v\(v)")
-        updateItem.action = #selector(updateItemClicked)
+        refreshUpdateItem()
+    }
+
+    private func refreshUpdateItem() {
+        let presentation = UpdateMenuPresentation(
+            checking: updateCheckInFlight, availableVersion: availableUpdate)
+        updateItem.title = presentation.title
+        updateItem.action = presentation.enabled ? #selector(updateItemClicked) : nil
         updateItem.target = self
     }
 
@@ -1160,9 +1162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               now - defaults.double(forKey: key) > 24 * 3600 else { return }
         lastUpdateAttempt = attempt
         updateCheckInFlight = true
+        refreshUpdateItem()
         Updater.check { [weak self] result in
             guard let self else { return }
             self.updateCheckInFlight = false
+            self.refreshUpdateItem()
             switch result {
             case .updateAvailable(let v):
                 self.defaults.set(now, forKey: key)
@@ -1244,14 +1248,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func onSleep() {
-        asleep = true
+        sampleSession.sleep()
+        fullSamplePending = false
+        statsView.update(latest, history: cpuHistory, meterColor: meterColor.color)
         runnerTimer?.invalidate()
         runnerTimer = nil
     }
 
     @objc private func onWake() {
-        asleep = false
+        sampleSession.wake()
         sampling.resetFastHistory()
+        statsView.update(latest, history: cpuHistory, meterColor: meterColor.color)
         startAnimation(interval: currentInterval)
         requestSample(full: menuOpen)
         maybeAutoCheckUpdate()

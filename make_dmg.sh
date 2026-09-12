@@ -8,7 +8,6 @@ cd "$(dirname "$0")"
 APP_NAME="BusyCat"
 APP_BUNDLE="$APP_NAME.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
-DMG_NAME="$APP_NAME-$VERSION-macOS.dmg"
 STAGE_ROOT=".build/dmg"
 STAGE_DIR="$STAGE_ROOT/$APP_NAME-$VERSION"
 VOLUME_NAME="$APP_NAME $VERSION"
@@ -31,6 +30,15 @@ esac
 if [ "$#" -gt 1 ]; then
     echo "Usage: $0 [--local]" >&2
     exit 2
+fi
+
+# Local artifacts must never replace the signed/notarized release artifact.
+DMG_NAME="$APP_NAME-$VERSION-macOS.dmg"
+if $LOCAL_PACKAGE; then
+    DMG_NAME="$APP_NAME-$VERSION-macOS-local.dmg"
+    STAGE_DIR="$STAGE_ROOT/$APP_NAME-$VERSION-local"
+    TEMP_DMG="$STAGE_ROOT/$APP_NAME-$VERSION-local-rw.dmg"
+    PENDING_DMG="$STAGE_ROOT/$APP_NAME-$VERSION-local-pending.dmg"
 fi
 
 if [ -z "$VERSION" ]; then

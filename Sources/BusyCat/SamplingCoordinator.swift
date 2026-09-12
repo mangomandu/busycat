@@ -1,5 +1,33 @@
 import Foundation
 
+/// Main-thread presentation history belongs to one uninterrupted awake session.
+struct SamplingSession {
+    private(set) var asleep = false
+    private(set) var generation: UInt64 = 0
+    private(set) var cpuHistory: [Double] = []
+
+    mutating func sleep() {
+        asleep = true
+        generation &+= 1
+        cpuHistory.removeAll(keepingCapacity: true)
+    }
+
+    mutating func wake() {
+        asleep = false
+        generation &+= 1
+        cpuHistory.removeAll(keepingCapacity: true)
+    }
+
+    func accepts(_ generation: UInt64) -> Bool {
+        !asleep && self.generation == generation
+    }
+
+    mutating func appendCPU(_ value: Double?) {
+        guard !asleep else { return }
+        MetricMath.updateHistory(&cpuHistory, sample: value)
+    }
+}
+
 struct SampleFields: OptionSet, Sendable {
     let rawValue: UInt8
 
