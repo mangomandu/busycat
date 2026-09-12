@@ -148,6 +148,18 @@ macOS Swift 툴체인(Xcode Command Line Tools)만 있으면 됩니다. 추가 �
 필요합니다. `BUSYCAT_SIGN_IDENTITY`와 `BUSYCAT_NOTARY_PROFILE`을 설정한 뒤
 `./make_dmg.sh`를 실행하면 Hardened Runtime 서명·공증·스테이플을 진행합니다.
 
+배포 전에는 최종 DMG와 Homebrew 해시가 일치하는지 확인합니다.
+
+```bash
+./tools/check_release_consistency.sh --artifact BusyCat-1.1.5-macOS.dmg
+```
+
+파일명은 배포할 버전에 맞춥니다. 공식 패키징은 서명·스테이플이 끝난 뒤 이 검사를
+자동 실행합니다. 불일치 시 완성된 DMG는 보존됩니다. 의도한 배포 파일인지 확인하고
+`Casks/busycat.rb`의 `sha256`을 출력된 실제 해시로 갱신한 뒤, **DMG를 다시 빌드하지
+않고** 검사만 재실행하세요. 로컬 패키지는 검사 대상에서 제외합니다. `--artifact`가
+없으면 메타데이터만 검사하므로 DMG가 없어도 개발·테스트는 가능합니다.
+
 종료는 고양이 메뉴 → **바쁘냥 종료** (⌘Q). 로그인 시 자동 실행은 바쁘냥의
 **설정 → 시스템 → 로그인 시 자동 실행**에서 켤 수 있습니다.
 

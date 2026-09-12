@@ -2,6 +2,31 @@
 set -euo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
+ARTIFACT=""
+case "${1:-}" in
+  "")
+    if [ "$#" -ne 0 ]; then
+      echo "Usage: $0 [--artifact PATH]" >&2
+      exit 2
+    fi
+    ;;
+  --artifact)
+    if [ "$#" -ne 2 ] || [ -z "$2" ]; then
+      echo "Usage: $0 [--artifact PATH]" >&2
+      exit 2
+    fi
+    # Resolve relative paths against the caller, before changing directory.
+    case "$2" in
+      /*) ARTIFACT="$2" ;;
+      *) ARTIFACT="$PWD/$2" ;;
+    esac
+    ;;
+  *)
+    echo "Usage: $0 [--artifact PATH]" >&2
+    exit 2
+    ;;
+esac
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -49,3 +74,25 @@ for readme in README.md README.ko.md; do
 done
 
 echo "Release metadata is consistent for v$SHORT_VERSION."
+
+if [ -n "$ARTIFACT" ]; then
+  if [ "${ARTIFACT##*/}" != "$ASSET" ]; then
+    echo "Expected release artifact named $ASSET (not a local package or another version)." >&2
+    exit 1
+  fi
+  if [ ! -f "$ARTIFACT" ]; then
+    echo "Release artifact not found: $ARTIFACT" >&2
+    exit 1
+  fi
+  ACTUAL_SHA="$(shasum -a 256 "$ARTIFACT" | awk '{print $1}')"
+  if [ "$ACTUAL_SHA" != "$CASK_SHA" ]; then
+    echo "Release artifact SHA-256 mismatch. Do not publish this Cask yet." >&2
+    echo "Cask:   $CASK_SHA" >&2
+    echo "Actual: $ACTUAL_SHA" >&2
+    echo "After confirming this is the intended final DMG, update Casks/busycat.rb and rerun this check without rebuilding the DMG." >&2
+    exit 1
+  fi
+  echo "Release artifact SHA-256 matches Casks/busycat.rb."
+else
+  echo "Artifact SHA-256 not checked; use --artifact PATH before publishing."
+fi

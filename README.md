@@ -152,6 +152,18 @@ Official DMGs require a Developer ID Application identity and a `notarytool`
 keychain profile; `./make_dmg.sh` signs with hardened runtime, notarizes, and
 staples the result using `BUSYCAT_SIGN_IDENTITY` and `BUSYCAT_NOTARY_PROFILE`.
 
+Before publishing, verify the final DMG against the Homebrew checksum:
+
+```bash
+./tools/check_release_consistency.sh --artifact BusyCat-1.1.5-macOS.dmg
+```
+
+Use the release version's filename. Official packaging runs this check automatically
+after signing and stapling. If it fails, the completed DMG is preserved: confirm
+the artifact, update `sha256` in `Casks/busycat.rb` to the printed actual hash,
+then rerun the check **without rebuilding**. Local packages are excluded. Without
+`--artifact`, only metadata is checked, so tests work before a DMG exists.
+
 Quit from the cat's menu → **Quit BusyCat** (⌘Q). Enable launch at login under
 **BusyCat Settings → System → Launch at login**.
 

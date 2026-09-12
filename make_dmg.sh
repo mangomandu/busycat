@@ -237,3 +237,9 @@ trap - EXIT
 
 echo "Built $DMG_NAME"
 shasum -a 256 "$DMG_NAME"
+
+# Verify the final bytes, after notarization/stapling. On mismatch, preserve the
+# completed DMG so the Cask can be updated and checked without another build.
+if ! $LOCAL_PACKAGE; then
+    ./tools/check_release_consistency.sh --artifact "$DMG_NAME"
+fi

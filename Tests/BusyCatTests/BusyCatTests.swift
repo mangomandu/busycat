@@ -252,6 +252,57 @@ struct BusyCatTests {
             executableURL: shell, arguments: [], timeout: .nan) == nil)
     }
 
+    @Test(arguments: ["match", "mismatch", "missing", "local", "metadata", "badArguments"])
+    func releaseArtifactChecksumValidation(scenario: String) throws {
+        let manager = FileManager.default
+        let fixture = manager.temporaryDirectory.appendingPathComponent("BusyCat checksum \(UUID().uuidString)")
+        try manager.createDirectory(at: fixture, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: fixture) }
+        try manager.createDirectory(at: fixture.appendingPathComponent("tools"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: fixture.appendingPathComponent("Casks"), withIntermediateDirectories: true)
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let script = fixture.appendingPathComponent("tools/check_release_consistency.sh")
+        try manager.copyItem(at: root.appendingPathComponent("tools/check_release_consistency.sh"), to: script)
+        let plist = try PropertyListSerialization.data(fromPropertyList: [
+            "CFBundleShortVersionString": "9.8.7", "CFBundleVersion": "9.8.7"
+        ], format: .xml, options: 0)
+        try plist.write(to: fixture.appendingPathComponent("Info.plist"))
+        let assetName = "BusyCat-9.8.7-macOS.dmg"
+        for name in ["README.md", "README.ko.md"] {
+            try assetName.write(to: fixture.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        // SHA-256 of the three bytes "abc"; no DMG mounting is needed to test hashing.
+        let sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        let cask = """
+          version "9.8.7"
+          sha256 "\(sha)"
+          depends_on arch: :arm64
+          depends_on macos: :ventura
+        """
+        try cask.write(to: fixture.appendingPathComponent("Casks/busycat.rb"), atomically: true, encoding: .utf8)
+        let artifact = fixture.appendingPathComponent(
+            scenario == "local" ? "BusyCat-9.8.7-macOS-local.dmg" : assetName)
+        if scenario != "missing" && scenario != "metadata" {
+            try Data((scenario == "mismatch" ? "modified" : "abc").utf8).write(to: artifact)
+        }
+        var args = [script.path]
+        if scenario == "badArguments" {
+            args += ["--artifact"]
+        } else if scenario != "metadata" {
+            args += ["--artifact", artifact.path]
+        }
+        let result = ThermalReader.runCommand(
+            executableURL: URL(fileURLWithPath: "/bin/bash"), arguments: args, timeout: 3)
+        if scenario == "match" || scenario == "metadata" {
+            let output = String(decoding: try #require(result), as: UTF8.self)
+            #expect(output.contains(scenario == "match"
+                ? "SHA-256 matches" : "SHA-256 not checked"))
+        } else {
+            #expect(result == nil)
+        }
+    }
+
     @Test func localDMGPathsCannotReplaceReleaseArtifacts() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
